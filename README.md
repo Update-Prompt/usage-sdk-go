@@ -13,7 +13,7 @@ Counts how often each consumer calls each endpoint of your Go HTTP API and repor
 go get github.com/Update-Prompt/usage-sdk-go
 ```
 
-Requires Go 1.27 or later.
+Requires Go 1.24 or later.
 
 ## Quick start
 
@@ -66,7 +66,7 @@ Calls are grouped by route template, such as `/orders/{id}`, not by raw path. Th
 
 A call with no route that answers 404 isn't counted, so requests for paths your API doesn't have, such as scanners probing `/.env`, don't become endpoints. A `"/"` pattern matches every path, so calls it serves are reported as `/`.
 
-Query parameters are reported by name only, never by value.
+Query parameters are reported by name only, never by value. Names don't split an endpoint: each report lists the names its calls sent, up to 50.
 
 ## Reporting calls by hand
 
@@ -92,7 +92,7 @@ A frozen or stopped process loses the counts it hasn't sent. In AWS Lambda and s
 | Sending | Every 10 seconds, in batches of up to 1,000 reports, one request at a time |
 | Retries | 429, 5xx and network errors, after `Retry-After` or a backoff from 1 s to 60 s, with the same `Idempotency-Key`, so nothing is counted twice |
 | Refused batches | Any other 4xx (such as a revoked key): dropped, not retried |
-| Memory | At most 10,000 distinct reports. When full, calls already counted keep counting and new ones are dropped |
+| Memory | At most 10,000 distinct reports of at most 8 KB each. When full, calls already counted keep counting and new ones are dropped |
 | Shutdown | `Close(ctx)` sends what's left until `ctx` is done |
 | Health | `client.Stats()` returns calls counted, sent and dropped. Pass `Options.Logger` for one log line per problem |
 

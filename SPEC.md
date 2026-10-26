@@ -40,9 +40,9 @@ The send interval and the memory limit are constants, not settings.
 |---|---|
 | `method`, `host` | As received |
 | `route` | The router's template, such as `/orders/{id}`, sent to `POST /v1/usage` |
-| `path` | The raw path, only when there is no template, sent to `POST /v1/usage/paths`, followed by `?` and the query parameter names (escaped, no values) |
+| `path` | The raw path, only when there is no template, sent to `POST /v1/usage/paths`, followed by `?` and the query parameter names (escaped, no values) when there are any |
 | `consumer` | As set by the application, or left out |
-| `queryParams` | Names from the query string, decoded, in order (route reports only) |
+| `queryParams` | Names from the query string, decoded. Collected per report (each name once, in the order seen, at most 50, names over 512 bytes skipped), so they never split a report. Path reports carry them as the query string instead |
 | `timestamp` | When the request started, rounded down to the minute, UTC |
 
 The one rule in the SDK: a call with **no template that answered 404** isn't counted, so scanners don't create endpoints. Only the SDK knows the status.
@@ -59,7 +59,7 @@ flowchart LR
 
 | Rule | Value |
 |---|---|
-| Key | Every field of §2, minute included |
+| Key | Method, host, route or path, consumer and minute. A call whose key is over 8 KB is dropped, so junk requests can't fill memory |
 | Send | Every 10 s ±20% jitter: take the counts, start new ones, and split them into batches of at most 1,000 reports and under 1 MB, one endpoint per batch |
 | In flight | One request at a time, oldest batch first |
 | Memory limit | 10,000 distinct reports, counting and waiting together. When full, calls that need a new report are dropped; existing ones keep counting |
@@ -73,7 +73,7 @@ flowchart LR
 | Answer | The SDK |
 |---|---|
 | 2xx (202, 207) | Done, without reading the body |
-| 429, 5xx, network error | Retries the same batch after `Retry-After` (seconds or a date), else after a backoff from 1 s doubling to 60 s, ±20% |
+| 429, 5xx, network error | Retries the same batch after `Retry-After` (seconds or a date, at most 5 minutes), else after a backoff from 1 s doubling to 60 s, ±20%. A request the SDK cancels itself, such as on shutdown, isn't a failure and is retried at once |
 | Any other 4xx | Drops the batch and logs once |
 
 The API decides everything else: invalid reports (207), reports over 24 hours old (refused, so retries end), revoked keys (401) and limits (429).

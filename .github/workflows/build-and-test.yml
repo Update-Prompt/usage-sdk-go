@@ -80,3 +80,20 @@ jobs:
         run: go vet ./...
       - name: Run the tests
         run: go test -race ./...
+
+  # The go line in go.mod is the oldest Go apps may use, so the code must still build and pass there
+  test-oldest-go:
+    name: tests on the oldest Go
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.go == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      # Use the installed Go, not the newer toolchain go.mod names
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.24'
+      - name: Run the tests
+        run: go test -race ./...
