@@ -30,6 +30,8 @@ type fakeAnswer struct {
 	retryAfter string
 	// dropConnection closes the connection without an answer
 	dropConnection bool
+	// delay holds the answer back, or until the client gives up
+	delay time.Duration
 }
 
 type receivedBatch struct {
@@ -63,6 +65,13 @@ func (gateway *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	gateway.received = append(gateway.received, batch)
 	gateway.mu.Unlock()
 
+	if answer.delay > 0 {
+		select {
+		case <-time.After(answer.delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if answer.dropConnection {
 		connection, _, _ := http.NewResponseController(w).Hijack()
 		_ = connection.Close()
@@ -158,4 +167,16 @@ func expectStats(t *testing.T, client *Client, expected Stats) {
 
 func consumerID(i int) string {
 	return fmt.Sprintf("consumer-%d", i)
+}
+
+// waitFor waits up to 5 s for done to be true
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatal("Timed out waiting")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

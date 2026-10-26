@@ -80,17 +80,20 @@ type Client struct {
 	maxBackoff time.Duration
 	now        func() time.Time
 
-	// mu guards counts, queue and closed
+	// mu guards counts, queue, queuedReports and closed
 	mu     sync.Mutex
-	counts map[reportKey]uint64
+	counts map[reportKey]*tally
 	queue  []*batch
-	closed bool
+	// queuedReports is how many reports are queued or being made into batches
+	queuedReports int
+	closed        bool
 
-	// sendMu lets one goroutine at a time send, so at most one request is in flight
-	sendMu sync.Mutex
-	// retryAt is when the batch at the head of the queue may be tried again;
-	// guarded by sendMu
-	retryAt time.Time
+	// sendSlot is held by whoever sends, so at most one request is in flight.
+	// Only its holder changes the head of the queue.
+	sendSlot chan struct{}
+	// retryAt is when the head of the queue may be tried again, in Unix
+	// nanoseconds, or 0
+	retryAt atomic.Int64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -145,7 +148,8 @@ func newClient(options Options) *Client {
 		minBackoff: time.Second,
 		maxBackoff: time.Minute,
 		now:        time.Now,
-		counts:     map[reportKey]uint64{},
+		counts:     map[reportKey]*tally{},
+		sendSlot:   make(chan struct{}, 1),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -169,30 +173,43 @@ func (client *Client) Flush(ctx context.Context) error {
 }
 
 // Close stops the background sending, then sends what's left until ctx is
-// done. Calls that are still unsent are dropped. Calls recorded after Close
-// are dropped too.
+// done. Calls that are still unsent are dropped, and so are calls recorded
+// after Close.
 func (client *Client) Close(ctx context.Context) error {
 	client.mu.Lock()
 	client.closed = true
 	client.mu.Unlock()
 	client.stopOnce.Do(func() { close(client.stop) })
-	<-client.done
-	if client.apiKey == "" {
-		return nil
+	select {
+	case <-client.done:
+	case <-ctx.Done():
 	}
-	err := client.Flush(ctx)
+	var err error
+	if client.apiKey != "" {
+		err = client.Flush(ctx)
+	}
 
 	client.mu.Lock()
 	var unsent uint64
-	for _, count := range client.counts {
-		unsent += count
+	for _, t := range client.counts {
+		unsent += t.calls
 	}
-	for _, batch := range client.queue {
-		unsent += batch.calls
-	}
-	client.counts = map[reportKey]uint64{}
-	client.queue = nil
+	client.counts = map[reportKey]*tally{}
 	client.mu.Unlock()
+	// The queue only changes in the hands of the sender, and someone else's
+	// Flush may still be sending: then its batches are left to it
+	select {
+	case client.sendSlot <- struct{}{}:
+		client.mu.Lock()
+		for _, b := range client.queue {
+			unsent += b.calls
+			client.queuedReports -= b.reports
+		}
+		client.queue = nil
+		client.mu.Unlock()
+		<-client.sendSlot
+	default:
+	}
 	client.dropped.Add(unsent)
 	return err
 }
@@ -214,8 +231,8 @@ func (client *Client) run() {
 	nextSend := client.now().Add(jitter(client.interval))
 	for {
 		wait := nextSend.Sub(client.now())
-		if retryAt := client.retryTime(); !retryAt.IsZero() {
-			wait = min(wait, retryAt.Sub(client.now()))
+		if retryAt := client.retryAt.Load(); retryAt != 0 {
+			wait = min(wait, time.Unix(0, retryAt).Sub(client.now()))
 		}
 		timer := time.NewTimer(max(wait, 0))
 		select {
@@ -231,14 +248,6 @@ func (client *Client) run() {
 		}
 		_ = client.sendQueue(ctx, false)
 	}
-}
-
-// retryTime returns when the head of the queue may be retried, or zero if
-// nothing waits for a retry
-func (client *Client) retryTime() time.Time {
-	client.sendMu.Lock()
-	defer client.sendMu.Unlock()
-	return client.retryAt
 }
 
 // logOnce logs a problem at most once an hour

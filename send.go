@@ -22,46 +22,70 @@ var ErrNotSent = errors.New("updateprompt: calls not sent before the deadline")
 // batch must be retried, it waits and retries if wait is set, else it notes
 // when to retry and returns.
 func (client *Client) sendQueue(ctx context.Context, wait bool) error {
-	client.sendMu.Lock()
-	defer client.sendMu.Unlock()
+	select {
+	case client.sendSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ErrNotSent
+	}
+	defer func() { <-client.sendSlot }()
 	for {
 		client.mu.Lock()
 		if len(client.queue) == 0 {
 			client.mu.Unlock()
-			client.retryAt = time.Time{}
+			client.retryAt.Store(0)
 			return nil
 		}
 		head := client.queue[0]
 		client.mu.Unlock()
 
-		if delay := client.retryAt.Sub(client.now()); delay > 0 {
-			if !wait {
-				return nil
-			}
-			if !sleep(ctx, delay) {
-				return ErrNotSent
+		if retryAt := client.retryAt.Load(); retryAt != 0 {
+			if delay := time.Unix(0, retryAt).Sub(client.now()); delay > 0 {
+				if !wait {
+					return nil
+				}
+				if !sleep(ctx, delay) {
+					return ErrNotSent
+				}
 			}
 		}
 		if ctx.Err() != nil {
 			return ErrNotSent
 		}
 
-		retryAfter, retry := client.send(ctx, head)
-		if retry {
+		retryAfter, outcome := client.send(ctx, head)
+		switch outcome {
+		case aborted:
+			return ErrNotSent
+		case retry:
 			head.tries++
-			client.retryAt = client.now().Add(client.retryDelay(head.tries, retryAfter))
+			client.retryAt.Store(client.now().Add(client.retryDelay(head.tries, retryAfter)).UnixNano())
 			continue
 		}
-		client.retryAt = time.Time{}
+		client.retryAt.Store(0)
 		client.mu.Lock()
-		client.queue = client.queue[1:]
+		if len(client.queue) > 0 && client.queue[0] == head {
+			client.queue = client.queue[1:]
+			client.queuedReports -= head.reports
+		}
 		client.mu.Unlock()
 	}
 }
 
-// send makes one request with a batch. It returns whether to retry the batch
-// and, if the API said so, after how long.
-func (client *Client) send(ctx context.Context, b *batch) (retryAfter time.Duration, retry bool) {
+// sendOutcome is what became of one try to send a batch
+type sendOutcome int
+
+const (
+	// finished: the batch was accepted or refused, and is done with
+	finished sendOutcome = iota
+	// retry: the batch must be tried again later
+	retry
+	// aborted: ctx ended the try, which says nothing about the API
+	aborted
+)
+
+// send makes one request with a batch. With retry, it also returns how long
+// the API asked to wait, if it did.
+func (client *Client) send(ctx context.Context, b *batch) (time.Duration, sendOutcome) {
 	if b.idempotencyKey == "" {
 		b.idempotencyKey = newIdempotencyKey()
 	}
@@ -74,7 +98,7 @@ func (client *Client) send(ctx context.Context, b *batch) (retryAfter time.Durat
 		// Only a malformed base URL gets here, and it won't get better
 		client.dropped.Add(b.calls)
 		client.logOnce("can't send usage: invalid base URL", "error", err)
-		return 0, false
+		return 0, finished
 	}
 	request.Header.Set("Authorization", "Bearer "+client.apiKey)
 	request.Header.Set("Content-Type", "application/json")
@@ -83,9 +107,12 @@ func (client *Client) send(ctx context.Context, b *batch) (retryAfter time.Durat
 
 	response, err := client.httpClient.Do(request)
 	if err != nil {
+		if ctx.Err() != nil {
+			return 0, aborted
+		}
 		// The error names the URL, never the key
 		client.logOnce("can't reach the Usage API, retrying", "error", err)
-		return 0, true
+		return 0, retry
 	}
 	defer response.Body.Close()
 	// Read a little, so the connection can be reused
@@ -94,15 +121,15 @@ func (client *Client) send(ctx context.Context, b *batch) (retryAfter time.Durat
 	switch {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
 		client.sent.Add(b.calls)
-		return 0, false
+		return 0, finished
 	case response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500:
 		client.logOnce(fmt.Sprintf("the Usage API answered %d, retrying", response.StatusCode))
-		return parseRetryAfter(response.Header.Get("Retry-After"), client.now()), true
+		return parseRetryAfter(response.Header.Get("Retry-After"), client.now()), retry
 	default:
 		client.dropped.Add(b.calls)
 		client.logOnce(fmt.Sprintf("the Usage API refused a batch with %d, so its calls are dropped", response.StatusCode),
 			"calls", b.calls)
-		return 0, false
+		return 0, finished
 	}
 }
 
@@ -120,17 +147,24 @@ func (client *Client) retryDelay(tries int, retryAfter time.Duration) time.Durat
 	return jitter(min(delay, client.maxBackoff))
 }
 
-// parseRetryAfter reads a Retry-After header in seconds or as an HTTP date.
-// Zero means it's missing or invalid.
+// maxRetryAfter caps the wait a Retry-After asks for, so a wrong header can't
+// hold back sending for long. The API asks for a minute at most.
+const maxRetryAfter = 5 * time.Minute
+
+// parseRetryAfter reads a Retry-After header in seconds or as an HTTP date, up
+// to maxRetryAfter. Zero means it's missing or invalid.
 func parseRetryAfter(value string, now time.Time) time.Duration {
 	if value == "" {
 		return 0
 	}
-	if seconds, err := strconv.Atoi(value); err == nil {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > int64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
+		}
 		return max(time.Duration(seconds)*time.Second, 0)
 	}
 	if at, err := http.ParseTime(value); err == nil {
-		return max(at.Sub(now), 0)
+		return min(max(at.Sub(now), 0), maxRetryAfter)
 	}
 	return 0
 }

@@ -115,6 +115,56 @@ func TestCloseDropsWhatItCannotSend(t *testing.T) {
 	expectStats(t, client, Stats{Counted: 2, Dropped: 2})
 }
 
+// Given a background send in flight when Close is called, and a long backoff
+// When Close cancels it
+// Then Close sends the batch again at once, without waiting out a backoff
+func TestCloseResendsWhatItInterrupted(t *testing.T) {
+	gateway := newFakeGateway(t)
+	gateway.answer(fakeAnswer{status: http.StatusAccepted, delay: time.Minute})
+	client := newClient(Options{APIKey: testAPIKey, BaseURL: gateway.URL})
+	client.interval = 10 * time.Millisecond
+	client.minBackoff = time.Minute
+	go client.run()
+
+	client.Record(Call{Method: "GET", Host: "h", Route: "/r"})
+	waitFor(t, func() bool { return gateway.requestCount() == 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := client.Close(ctx)
+
+	if err != nil {
+		t.Errorf("Expected Close to succeed, got %v", err)
+	}
+	expectStats(t, client, Stats{Counted: 1, Sent: 1})
+}
+
+// Given a Flush that keeps retrying a batch the API keeps refusing with 503
+// When Close is called with a short deadline
+// Then Close returns at its deadline instead of waiting for that Flush
+func TestCloseKeepsItsDeadline(t *testing.T) {
+	gateway := newFakeGateway(t)
+	unavailable := make([]fakeAnswer, 100)
+	for i := range unavailable {
+		unavailable[i] = fakeAnswer{status: http.StatusServiceUnavailable, retryAfter: "60"}
+	}
+	gateway.answer(unavailable...)
+	client := newTestClient(gateway)
+	client.Record(Call{Method: "GET", Host: "h", Route: "/r"})
+	flushCtx, stopFlush := context.WithCancel(context.Background())
+	defer stopFlush()
+	go func() { _ = client.Flush(flushCtx) }()
+	waitFor(t, func() bool { return gateway.requestCount() == 1 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := client.Close(ctx)
+
+	if !errors.Is(err, ErrNotSent) || time.Since(started) > 2*time.Second {
+		t.Errorf("Expected ErrNotSent at the deadline, got %v after %v", err, time.Since(started))
+	}
+}
+
 // Given a client that sends every 20 ms
 // When a call is recorded and nobody flushes
 // Then it is sent in the background
@@ -127,10 +177,7 @@ func TestRunSendsInTheBackground(t *testing.T) {
 
 	client.Record(Call{Method: "GET", Host: "h", Route: "/r"})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Stats().Sent == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return client.Stats().Sent > 0 })
 	expectStats(t, client, Stats{Counted: 1, Sent: 1})
 }
 
@@ -148,10 +195,7 @@ func TestRunRetriesInTheBackground(t *testing.T) {
 
 	client.Record(Call{Method: "GET", Host: "h", Route: "/r"})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Stats().Sent == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, func() bool { return client.Stats().Sent > 0 })
 	expectStats(t, client, Stats{Counted: 1, Sent: 1})
 	if got := gateway.requestCount(); got != 2 {
 		t.Errorf("Expected 2 requests, got %d", got)
@@ -160,7 +204,7 @@ func TestRunRetriesInTheBackground(t *testing.T) {
 
 // Given Retry-After values in seconds, as a date, and invalid
 // When they are parsed
-// Then seconds and dates give the wait, anything else gives zero
+// Then seconds and dates give the wait up to the cap, anything else gives zero
 func TestParseRetryAfter(t *testing.T) {
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	cases := map[string]time.Duration{
@@ -170,6 +214,9 @@ func TestParseRetryAfter(t *testing.T) {
 		"soon":                          0,
 		"Mon, 26 Oct 2026 12:00:30 GMT": 30 * time.Second,
 		"Mon, 26 Oct 2026 11:59:00 GMT": 0,
+		"31536000":                      maxRetryAfter,
+		"99999999999999999":             maxRetryAfter,
+		"Tue, 26 Oct 2027 12:00:00 GMT": maxRetryAfter,
 	}
 	for value, expected := range cases {
 		if got := parseRetryAfter(value, now); got != expected {
