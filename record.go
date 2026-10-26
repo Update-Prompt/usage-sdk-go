@@ -3,6 +3,7 @@ package updateprompt
 import (
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,12 +44,29 @@ type reportKey struct {
 	kind     reportKind
 	method   string
 	host     string
-	endpoint string // the route, or the path with query parameter names
+	endpoint string // the route, or the raw path
 	consumer string
-	// queryParams are the names, escaped and joined by "&", for route reports
-	queryParams string
-	minute      int64 // Unix seconds, rounded down to the minute
+	minute   int64 // Unix seconds, rounded down to the minute
 }
+
+// tally is what a report adds up: its calls and the query parameter names they
+// sent. Names are a set, so they never split a report.
+type tally struct {
+	calls       uint64
+	queryParams []string
+}
+
+// Limits that keep memory bounded whatever the requests hold
+const (
+	// maxKeyBytes caps the method, host, route or path and consumer of a call
+	// together. The API refuses far shorter values, so only junk is dropped.
+	maxKeyBytes = 8 << 10
+	// maxQueryParams is how many names one report keeps, as many as the API does
+	maxQueryParams = 50
+	// maxQueryParamBytes skips longer names: the API keeps names of up to 128
+	// characters, which is at most 512 bytes
+	maxQueryParamBytes = 512
+)
 
 // Record counts one call. It never blocks on the network. A call without a
 // Route or Path is ignored.
@@ -61,22 +79,22 @@ func (client *Client) Record(call Call) {
 		at = client.now()
 	}
 	key := reportKey{
+		kind:     routeReport,
 		method:   call.Method,
 		host:     call.Host,
+		endpoint: call.Route,
 		consumer: call.Consumer,
 		minute:   at.Unix() - at.Unix()%60,
 	}
-	if call.Route != "" {
-		key.kind = routeReport
-		key.endpoint = call.Route
-		key.queryParams = joinQueryParams(call.QueryParams)
-	} else {
+	if call.Route == "" {
 		key.kind = pathReport
 		key.endpoint = call.Path
-		if len(call.QueryParams) > 0 {
-			// Names only, never values
-			key.endpoint += "?" + joinQueryParams(call.QueryParams)
-		}
+	}
+	if len(key.method)+len(key.host)+len(key.endpoint)+len(key.consumer) > maxKeyBytes {
+		client.dropped.Add(1)
+		client.logOnce("a call's host, route, path or consumer is too long to report, so it is dropped",
+			"limit_bytes", maxKeyBytes)
+		return
 	}
 
 	client.mu.Lock()
@@ -85,38 +103,53 @@ func (client *Client) Record(call Call) {
 		client.dropped.Add(1)
 		return
 	}
-	if _, ok := client.counts[key]; !ok && client.pendingReports() >= maxPendingReports {
-		client.dropped.Add(1)
-		client.logOnce("too many distinct calls waiting to be sent, so new ones are dropped",
-			"limit", maxPendingReports)
-		return
+	current, ok := client.counts[key]
+	if !ok {
+		if len(client.counts)+client.queuedReports >= maxPendingReports {
+			client.dropped.Add(1)
+			client.logOnce("too many distinct calls waiting to be sent, so new ones are dropped",
+				"limit", maxPendingReports)
+			return
+		}
+		current = &tally{}
+		client.counts[key] = current
 	}
-	client.counts[key]++
+	current.calls++
+	current.addQueryParams(call.QueryParams)
 	client.counted.Add(1)
 }
 
-// pendingReports is how many reports are in memory, counting or queued.
-// The caller holds mu.
-func (client *Client) pendingReports() int {
-	pending := len(client.counts)
-	for _, batch := range client.queue {
-		pending += batch.reports
+// addQueryParams adds names the tally doesn't have yet, up to maxQueryParams
+func (t *tally) addQueryParams(names []string) {
+	for _, name := range names {
+		if len(t.queryParams) == maxQueryParams {
+			return
+		}
+		if name != "" && len(name) <= maxQueryParamBytes && !slices.Contains(t.queryParams, name) {
+			t.queryParams = append(t.queryParams, name)
+		}
 	}
-	return pending
 }
 
 // queueCounts turns the counts so far into batches at the end of the queue
 func (client *Client) queueCounts() {
 	client.mu.Lock()
 	counts := client.counts
-	client.counts = map[reportKey]uint64{}
+	client.counts = map[reportKey]*tally{}
+	// Still in memory while they are encoded, so they count against the limit
+	client.queuedReports += len(counts)
 	client.mu.Unlock()
 	if len(counts) == 0 {
 		return
 	}
-	batches := makeBatches(counts)
+	batches, skipped, skippedCalls := makeBatches(counts)
+	if skippedCalls > 0 {
+		client.dropped.Add(skippedCalls)
+		client.logOnce("a report is too large to send, so its calls are dropped")
+	}
 	client.mu.Lock()
 	client.queue = append(client.queue, batches...)
+	client.queuedReports -= skipped
 	client.mu.Unlock()
 }
 
@@ -152,9 +185,9 @@ type report struct {
 }
 
 // makeBatches turns counts into batches of at most maxBatchReports reports and
-// maxBatchBytes bytes, one kind of report per batch
-func makeBatches(counts map[reportKey]uint64) []*batch {
-	var batches []*batch
+// maxBatchBytes bytes, one kind of report per batch. It also returns the
+// reports, and their calls, too large for any batch.
+func makeBatches(counts map[reportKey]*tally) (batches []*batch, skipped int, skippedCalls uint64) {
 	open := map[reportKind]*batch{}
 	var bodies = map[*batch]*strings.Builder{}
 	finish := func(b *batch) {
@@ -163,10 +196,12 @@ func makeBatches(counts map[reportKey]uint64) []*batch {
 		batches = append(batches, b)
 		delete(open, b.kind)
 	}
-	for key, count := range counts {
-		encoded, err := json.Marshal(key.report(count))
+	for key, t := range counts {
+		encoded, err := json.Marshal(key.report(t))
 		if err != nil || len(encoded)+len(`{"reports":[]}`) > maxBatchBytes {
-			// Can't happen with strings, and a report this large would be refused
+			// Only possible with a path of nearly 1 MB, which the API would refuse
+			skipped++
+			skippedCalls += t.calls
 			continue
 		}
 		current := open[key.kind]
@@ -185,46 +220,40 @@ func makeBatches(counts map[reportKey]uint64) []*batch {
 		}
 		bodies[current].Write(encoded)
 		current.reports++
-		current.calls += count
+		current.calls += t.calls
 	}
 	for _, kind := range []reportKind{routeReport, pathReport} {
 		if current := open[kind]; current != nil {
 			finish(current)
 		}
 	}
-	return batches
+	return batches, skipped, skippedCalls
 }
 
-// report returns the report for count calls with this key
-func (key reportKey) report(count uint64) report {
+// report returns the report for the tally's calls with this key
+func (key reportKey) report(t *tally) report {
 	r := report{
 		Method:    key.method,
 		Host:      key.host,
 		Consumer:  key.consumer,
 		Timestamp: time.Unix(key.minute, 0).UTC().Format(time.RFC3339),
-		Count:     count,
+		Count:     t.calls,
 	}
 	if key.kind == routeReport {
 		r.Route = key.endpoint
-		if key.queryParams != "" {
-			for _, name := range strings.Split(key.queryParams, "&") {
-				// Escaped by joinQueryParams, so this can't fail
-				unescaped, _ := url.QueryUnescape(name)
-				r.QueryParams = append(r.QueryParams, unescaped)
-			}
+		r.QueryParams = t.queryParams
+		return r
+	}
+	// The paths endpoint reads names from the query string: names only,
+	// escaped, never values
+	r.Path = key.endpoint
+	for i, name := range t.queryParams {
+		if i == 0 {
+			r.Path += "?"
+		} else {
+			r.Path += "&"
 		}
-	} else {
-		r.Path = key.endpoint
+		r.Path += url.QueryEscape(name)
 	}
 	return r
-}
-
-// joinQueryParams escapes each name and joins them with "&", so names that
-// hold "&" or "=" stay apart and can be read back
-func joinQueryParams(names []string) string {
-	escaped := make([]string, len(names))
-	for i, name := range names {
-		escaped[i] = url.QueryEscape(name)
-	}
-	return strings.Join(escaped, "&")
 }

@@ -42,7 +42,6 @@ func TestRecordKeepsDifferentCallsApart(t *testing.T) {
 		func(c *Call) { c.Host = "eu.api.example.com" },
 		func(c *Call) { c.Route = "/orders/{id}" },
 		func(c *Call) { c.Consumer = "acme" },
-		func(c *Call) { c.QueryParams = []string{"page"} },
 		func(c *Call) { c.Time = testTime.Add(time.Minute) },
 	} {
 		call := base
@@ -74,6 +73,49 @@ func TestRecordSendsPathsToThePathsEndpoint(t *testing.T) {
 		Path: "/orders/8812?expand&a%26b", Timestamp: "2026-10-26T12:30:00Z", Count: 1}})
 	if got := gateway.reports("/v1/usage"); len(got) != 0 {
 		t.Errorf("Expected no route reports, got %v", got)
+	}
+}
+
+// Given calls to one endpoint in one minute with different query parameter names,
+// more than 50 in all, with repeats, empty and overly long names
+// When they are flushed
+// Then they make one report with each name once, in order seen, at most 50
+func TestRecordCollectsQueryParamNames(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+
+	call := Call{Method: "GET", Host: "h", Route: "/r", Time: testTime}
+	call.QueryParams = []string{"page", "", strings.Repeat("x", maxQueryParamBytes+1), "page", "sort"}
+	client.Record(call)
+	for i := range 60 {
+		call.QueryParams = []string{consumerID(i)}
+		client.Record(call)
+	}
+	flush(t, client)
+
+	reports := gateway.reports("/v1/usage")
+	if len(reports) != 1 || reports[0].Count != 61 {
+		t.Fatalf("Expected one report of 61 calls, got %+v", reports)
+	}
+	names := reports[0].QueryParams
+	if len(names) != maxQueryParams || names[0] != "page" || names[1] != "sort" || names[2] != consumerID(0) {
+		t.Errorf("Expected page, sort, then names up to %d in all, got %v", maxQueryParams, names)
+	}
+}
+
+// Given a call whose path is longer than 8 KB
+// When it is recorded
+// Then it is dropped, not kept in memory
+func TestRecordDropsHugeCalls(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+
+	client.Record(Call{Method: "GET", Host: "h", Path: "/" + strings.Repeat("x", maxKeyBytes), Time: testTime})
+	flush(t, client)
+
+	expectStats(t, client, Stats{Dropped: 1})
+	if got := gateway.requestCount(); got != 0 {
+		t.Errorf("Expected no requests, got %d", got)
 	}
 }
 
