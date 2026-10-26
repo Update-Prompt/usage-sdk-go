@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["local>Update-Prompt/renovate-config"],
+  "packageRules": [
+    {
+      "description": "Keep the go line at the oldest Go this library supports; raising it would force apps that use it onto a newer Go. The toolchain line still updates.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "enabled": false
+    }
+  ]
+}
