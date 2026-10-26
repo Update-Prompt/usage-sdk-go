@@ -2,14 +2,16 @@ package updateprompt
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 // Given a ServeMux with patterns, with and without method and host
 // When they are called
-// Then each call is reported under the pattern's path, with query names but no values
+// Then calls are reported under the pattern's path, with query names but no values
 func TestMiddlewareReportsTheServeMuxPattern(t *testing.T) {
 	gateway := newFakeGateway(t)
 	client := newTestClient(gateway)
@@ -25,11 +27,9 @@ func TestMiddlewareReportsTheServeMuxPattern(t *testing.T) {
 
 	reports := gateway.reports("/v1/usage")
 	expected := map[string]report{
-		"/orders/{id}?": {Method: "GET", Host: "api.example.com", Route: "/orders/{id}",
-			Timestamp: "2026-10-26T12:30:00Z", Count: 1},
-		"/orders/{id}?expand,page": {Method: "GET", Host: "api.example.com", Route: "/orders/{id}",
-			QueryParams: []string{"expand", "page"}, Timestamp: "2026-10-26T12:30:00Z", Count: 1},
-		"/items/{id}?": {Method: "POST", Host: "api.example.com", Route: "/items/{id}",
+		"/orders/{id}": {Method: "GET", Host: "api.example.com", Route: "/orders/{id}",
+			QueryParams: []string{"expand", "page"}, Timestamp: "2026-10-26T12:30:00Z", Count: 2},
+		"/items/{id}": {Method: "POST", Host: "api.example.com", Route: "/items/{id}",
 			Timestamp: "2026-10-26T12:30:00Z", Count: 1},
 	}
 	expectReportSet(t, reports, expected)
@@ -143,13 +143,17 @@ func TestMiddlewareCountsPanics(t *testing.T) {
 	}
 }
 
-// Given a handler that streams and checks for http.Flusher
-// When it is called through the middleware
-// Then the writer still flushes
-func TestMiddlewareKeepsFlushing(t *testing.T) {
+// Given a writer that can flush but not hijack
+// When a handler checks the writer it gets through the middleware, and copies a body into it
+// Then it can flush, can't hijack, and the body arrives
+func TestMiddlewareKeepsTheWriterInterfaces(t *testing.T) {
 	gateway := newFakeGateway(t)
 	client := newTestClient(gateway)
 	handler := client.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := w.(http.Hijacker); ok {
+			t.Error("Expected no http.Hijacker")
+		}
+		_, _ = io.Copy(w, strings.NewReader("body"))
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			t.Fatal("Expected an http.Flusher")
@@ -160,8 +164,8 @@ func TestMiddlewareKeepsFlushing(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "http://h/stream", nil))
 
-	if !recorder.Flushed {
-		t.Error("Expected the response to be flushed")
+	if !recorder.Flushed || recorder.Body.String() != "body" {
+		t.Errorf("Expected the body flushed, got flushed %v, body %q", recorder.Flushed, recorder.Body.String())
 	}
 }
 
@@ -182,20 +186,13 @@ func serve(handler http.Handler, method, url string, headers ...string) {
 	handler.ServeHTTP(httptest.NewRecorder(), request)
 }
 
-// expectReportSet compares reports by route and query names, in any order
+// expectReportSet compares reports by route, in any order
 func expectReportSet(t *testing.T, got []report, expected map[string]report) {
 	t.Helper()
 	if len(got) != len(expected) {
 		t.Fatalf("Expected %d reports, got %+v", len(expected), got)
 	}
 	for _, r := range got {
-		key := r.Route + "?"
-		for i, name := range r.QueryParams {
-			if i > 0 {
-				key += ","
-			}
-			key += name
-		}
-		expectReports(t, []report{r}, []report{expected[key]})
+		expectReports(t, []report{r}, []report{expected[r.Route]})
 	}
 }

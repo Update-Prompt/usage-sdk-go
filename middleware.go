@@ -3,6 +3,7 @@ package updateprompt
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,6 +31,7 @@ func (client *Client) Middleware(next http.Handler) http.Handler {
 		info := &requestInfo{}
 		r = r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info))
 		recorder := &statusRecorder{ResponseWriter: w}
+		writer := recorder.wrap()
 		returned := false
 		// Deferred, so a call that panics is counted too, without recovering the
 		// panic: net/http still sees it with its stack
@@ -45,7 +47,7 @@ func (client *Client) Middleware(next http.Handler) http.Handler {
 			}
 			client.recordRequest(r, info, status, start)
 		}()
-		next.ServeHTTP(recorder, r)
+		next.ServeHTTP(writer, r)
 		returned = true
 	})
 }
@@ -171,18 +173,68 @@ func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
 	return recorder.ResponseWriter
 }
 
-// Flush keeps streaming responses working for handlers that check for http.Flusher
-func (recorder *statusRecorder) Flush() {
+// ReadFrom keeps the fast path for files, such as sendfile, when the writer
+// below has one
+func (recorder *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
 	if recorder.status == 0 {
 		recorder.status = http.StatusOK
 	}
-	_ = http.NewResponseController(recorder.ResponseWriter).Flush()
+	if readerFrom, ok := recorder.ResponseWriter.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(src)
+	}
+	return io.Copy(writerOnly{recorder.ResponseWriter}, src)
 }
 
-// Hijack keeps WebSocket upgrades working for handlers that check for http.Hijacker
-func (recorder *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+// writerOnly hides a writer's ReadFrom, so io.Copy doesn't call it again
+type writerOnly struct{ io.Writer }
+
+// wrap returns the recorder as a writer that is an http.Flusher and an
+// http.Hijacker only when the writer below is, so handlers that check for
+// them still choose correctly
+func (recorder *statusRecorder) wrap() http.ResponseWriter {
+	_, flusher := recorder.ResponseWriter.(http.Flusher)
+	_, hijacker := recorder.ResponseWriter.(http.Hijacker)
+	switch {
+	case flusher && hijacker:
+		return &flushHijackRecorder{recorder}
+	case flusher:
+		return &flushRecorder{recorder}
+	case hijacker:
+		return &hijackRecorder{recorder}
+	default:
+		return recorder
+	}
+}
+
+type flushRecorder struct{ *statusRecorder }
+
+func (recorder *flushRecorder) Flush() { recorder.flush() }
+
+type hijackRecorder struct{ *statusRecorder }
+
+func (recorder *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+type flushHijackRecorder struct{ *statusRecorder }
+
+func (recorder *flushHijackRecorder) Flush() { recorder.flush() }
+
+func (recorder *flushHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+func (recorder *statusRecorder) flush() {
 	if recorder.status == 0 {
+		recorder.status = http.StatusOK
+	}
+	recorder.ResponseWriter.(http.Flusher).Flush()
+}
+
+func (recorder *statusRecorder) hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := recorder.ResponseWriter.(http.Hijacker).Hijack()
+	if err == nil && recorder.status == 0 {
 		recorder.status = http.StatusSwitchingProtocols
 	}
-	return http.NewResponseController(recorder.ResponseWriter).Hijack()
+	return conn, rw, err
 }
