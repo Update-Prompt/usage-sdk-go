@@ -1,10 +1,7 @@
 package updateprompt
 
 import (
-	"bufio"
 	"context"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,14 +19,56 @@ import (
 // route that got 404 isn't counted, so requests for paths your API doesn't
 // have don't become endpoints.
 func (client *Client) Middleware(next http.Handler) http.Handler {
+	return client.middleware(next, nil)
+}
+
+// MiddlewareWithRoute returns a middleware like [Client.Middleware] for a
+// router that puts the route it matched on the request, such as chi or
+// gorilla/mux. Add it inside the router, where that route can be seen. route
+// runs after the handler and returns the route template, or empty when the
+// router matched none; the ServeMux pattern isn't read. [Options.Route] still
+// comes first.
+//
+// The adapters in this repository use it; you need it only for a router
+// without one.
+func (client *Client) MiddlewareWithRoute(route func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return client.middleware(next, route)
+	}
+}
+
+// Begin starts counting one call, for frameworks whose handlers aren't
+// [http.Handler]s, such as gin and echo. Pass the request it returns on to
+// your handlers, so [SetConsumer] works there. When the handler is done, call
+// end with the route template the router matched, or empty when it matched
+// none, and the status sent. Only the first call to end counts.
+// [Options.Route] still comes first.
+//
+// The adapters in this repository use it; you need it only for a framework
+// without one.
+func (client *Client) Begin(r *http.Request) (_ *http.Request, end func(route string, status int)) {
+	if client.apiKey == "" {
+		return r, func(string, int) {}
+	}
+	start := client.now()
+	info := &requestInfo{}
+	r = r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info))
+	var once sync.Once
+	return r, func(route string, status int) {
+		once.Do(func() { client.recordRequest(r, info, route, status, start) })
+	}
+}
+
+// middleware counts every call to next, taking the route from route when
+// given, else from the ServeMux pattern. Routers such as chi set the request's
+// pattern too, so route alone decides when it is given.
+func (client *Client) middleware(next http.Handler, route func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if client.apiKey == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		start := client.now()
-		info := &requestInfo{}
-		r = r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info))
+		r, end := client.Begin(r)
 		recorder := &statusRecorder{ResponseWriter: w}
 		writer := recorder.wrap()
 		returned := false
@@ -45,7 +84,13 @@ func (client *Client) Middleware(next http.Handler) http.Handler {
 			default:
 				status = http.StatusInternalServerError
 			}
-			client.recordRequest(r, info, status, start)
+			var matched string
+			if route != nil {
+				matched = route(r)
+			} else {
+				matched = patternRoute(r.Pattern)
+			}
+			end(matched, status)
 		}()
 		next.ServeHTTP(writer, r)
 		returned = true
@@ -70,15 +115,16 @@ func ConsumerFromHeader(name string) func(*http.Request) string {
 	}
 }
 
-// recordRequest counts a request the middleware saw
-func (client *Client) recordRequest(r *http.Request, info *requestInfo, status int, start time.Time) {
+// recordRequest counts a request the middleware or Begin saw. route is the
+// router's template, used when Options.Route gives none.
+func (client *Client) recordRequest(r *http.Request, info *requestInfo, route string, status int, start time.Time) {
 	call := Call{Method: r.Method, Host: r.Host, Time: start}
 
 	if client.route != nil {
 		call.Route = client.route(r)
 	}
 	if call.Route == "" {
-		call.Route = patternRoute(r.Pattern)
+		call.Route = route
 	}
 	if call.Route == "" {
 		if status == http.StatusNotFound {
@@ -145,96 +191,4 @@ func (info *requestInfo) getConsumer() (string, bool) {
 	info.mu.Lock()
 	defer info.mu.Unlock()
 	return info.consumer, info.consumerSet
-}
-
-// statusRecorder notes the status a handler answers with
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (recorder *statusRecorder) WriteHeader(status int) {
-	// 1xx are informational; the final status comes later
-	if recorder.status == 0 && status >= 200 {
-		recorder.status = status
-	}
-	recorder.ResponseWriter.WriteHeader(status)
-}
-
-func (recorder *statusRecorder) Write(data []byte) (int, error) {
-	if recorder.status == 0 {
-		recorder.status = http.StatusOK
-	}
-	return recorder.ResponseWriter.Write(data)
-}
-
-// Unwrap lets http.ResponseController reach the writer below
-func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
-	return recorder.ResponseWriter
-}
-
-// ReadFrom keeps the fast path for files, such as sendfile, when the writer
-// below has one
-func (recorder *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
-	if recorder.status == 0 {
-		recorder.status = http.StatusOK
-	}
-	if readerFrom, ok := recorder.ResponseWriter.(io.ReaderFrom); ok {
-		return readerFrom.ReadFrom(src)
-	}
-	return io.Copy(writerOnly{recorder.ResponseWriter}, src)
-}
-
-// writerOnly hides a writer's ReadFrom, so io.Copy doesn't call it again
-type writerOnly struct{ io.Writer }
-
-// wrap returns the recorder as a writer that is an http.Flusher and an
-// http.Hijacker only when the writer below is, so handlers that check for
-// them still choose correctly
-func (recorder *statusRecorder) wrap() http.ResponseWriter {
-	_, flusher := recorder.ResponseWriter.(http.Flusher)
-	_, hijacker := recorder.ResponseWriter.(http.Hijacker)
-	switch {
-	case flusher && hijacker:
-		return &flushHijackRecorder{recorder}
-	case flusher:
-		return &flushRecorder{recorder}
-	case hijacker:
-		return &hijackRecorder{recorder}
-	default:
-		return recorder
-	}
-}
-
-type flushRecorder struct{ *statusRecorder }
-
-func (recorder *flushRecorder) Flush() { recorder.flush() }
-
-type hijackRecorder struct{ *statusRecorder }
-
-func (recorder *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return recorder.hijack()
-}
-
-type flushHijackRecorder struct{ *statusRecorder }
-
-func (recorder *flushHijackRecorder) Flush() { recorder.flush() }
-
-func (recorder *flushHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return recorder.hijack()
-}
-
-func (recorder *statusRecorder) flush() {
-	if recorder.status == 0 {
-		recorder.status = http.StatusOK
-	}
-	recorder.ResponseWriter.(http.Flusher).Flush()
-}
-
-func (recorder *statusRecorder) hijack() (net.Conn, *bufio.ReadWriter, error) {
-	conn, rw, err := recorder.ResponseWriter.(http.Hijacker).Hijack()
-	if err == nil && recorder.status == 0 {
-		recorder.status = http.StatusSwitchingProtocols
-	}
-	return conn, rw, err
 }
