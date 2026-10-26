@@ -4,7 +4,7 @@ Thanks for helping. Issues and pull requests are welcome.
 
 ## Before you start
 
-The SDK does one job and keeps it small: count calls and send the counts. Read [SPEC.md](SPEC.md) first; changes that add rules or settings the spec leaves to the Update Prompt services are unlikely to be merged. For a larger change, open an issue to discuss it first.
+The SDK does one job and keeps it small: count calls and send the counts. Read the [usage SDK specification](https://github.com/Update-Prompt/usage-sdk-spec) first; changes that add rules or settings the spec leaves to the Update Prompt services are unlikely to be merged. For a larger change, open an issue to discuss it first.
 
 ## Making a change
 

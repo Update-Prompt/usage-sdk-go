@@ -96,7 +96,7 @@ A frozen or stopped process loses the counts it hasn't sent. In AWS Lambda and s
 | Shutdown | `Close(ctx)` sends what's left until `ctx` is done |
 | Health | `client.Stats()` returns calls counted, sent and dropped. Pass `Options.Logger` for one log line per problem |
 
-[SPEC.md](SPEC.md) describes this behaviour for every Update Prompt usage SDK.
+The [usage SDK specification](https://github.com/Update-Prompt/usage-sdk-spec) describes this behaviour for every Update Prompt usage SDK, and how to build your own.
 
 ## Contributing and security
 
