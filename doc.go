@@ -13,6 +13,9 @@
 //	mux.HandleFunc("GET /orders/{id}", getOrder)
 //	http.ListenAndServe(":8080", client.Middleware(mux))
 //
+// For chi, gin, echo and gorilla/mux, add the adapter module for the router
+// instead, such as github.com/Update-Prompt/usage-sdk-go/updatepromptchi.
+//
 // Tell the SDK who is calling with [SetConsumer], usually where your own
 // authentication finds out, or with [Options.Consumer]. To report calls
 // without the middleware, use [Client.Record].

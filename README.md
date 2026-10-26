@@ -5,7 +5,7 @@ Counts how often each consumer calls each endpoint of your Go HTTP API and repor
 - **One line to add.** Wrap your router; endpoints are discovered from the calls.
 - **Never in your way.** Counting is a memory update. Nothing blocks, slows or fails a request, and if Update Prompt can't be reached, counts are kept within a fixed limit and the rest are dropped.
 - **Little data.** Calls are counted per endpoint, consumer and minute, and sent every 10 seconds. No bodies, header values, query values or IP addresses ever leave your server.
-- **Standard library only.**
+- **Standard library only.** Adapters for chi, gin, echo and gorilla/mux are separate modules, so you only download the router you use.
 
 ## Install
 
@@ -13,7 +13,7 @@ Counts how often each consumer calls each endpoint of your Go HTTP API and repor
 go get github.com/Update-Prompt/usage-sdk-go
 ```
 
-Requires Go 1.24 or later.
+Requires Go 1.24 or later. For a router adapter, also get its module (see [Routers](#routers)).
 
 ## Quick start
 
@@ -29,6 +29,35 @@ http.ListenAndServe(":8080", client.Middleware(mux))
 ```
 
 Get the API key from your API's page in Update Prompt and set it as `UPDATE_PROMPT_API_KEY`, or pass it as `Options.APIKey`. Without a key the middleware does nothing.
+
+## Routers
+
+Wrap `http.ServeMux` with `client.Middleware`, as above. For another router, add its adapter as the router's first middleware, so it sees the route the router matched:
+
+| Router | Module | Add |
+|---|---|---|
+| [chi](https://github.com/go-chi/chi) | `github.com/Update-Prompt/usage-sdk-go/updatepromptchi` | `router.Use(updatepromptchi.Middleware(client))` |
+| [gin](https://github.com/gin-gonic/gin) | `github.com/Update-Prompt/usage-sdk-go/updatepromptgin` | `engine.Use(updatepromptgin.Middleware(client))` |
+| [echo](https://github.com/labstack/echo) v5 | `github.com/Update-Prompt/usage-sdk-go/updatepromptecho` | `e.Use(updatepromptecho.Middleware(client))` |
+| [gorilla/mux](https://github.com/gorilla/mux) | `github.com/Update-Prompt/usage-sdk-go/updatepromptmux` | `router.Use(updatepromptmux.Middleware(client))` |
+
+```go
+import (
+	updateprompt "github.com/Update-Prompt/usage-sdk-go"
+	"github.com/Update-Prompt/usage-sdk-go/updatepromptchi"
+)
+
+client := updateprompt.New(updateprompt.Options{})
+defer client.Close(context.Background())
+
+router := chi.NewRouter()
+router.Use(updatepromptchi.Middleware(client))
+router.Get("/orders/{id}", getOrder)
+```
+
+The gin and echo adapters need Go 1.25, like gin and echo themselves. gorilla/mux runs middleware only for calls that match a route, so calls it answers with 404 or 405 aren't counted.
+
+Another router can use `client.MiddlewareWithRoute` with a function that reads its route, and a framework whose handlers aren't `http.Handler`s can use `client.Begin`, the way the adapters do.
 
 ## Consumers
 
@@ -46,6 +75,8 @@ func authenticate(next http.Handler) http.Handler {
 http.ListenAndServe(":8080", client.Middleware(authenticate(mux)))
 ```
 
+With gin, call `updateprompt.SetConsumer(c.Request, clientID)`, and with echo `updateprompt.SetConsumer(c.Request(), clientID)`.
+
 Or, when a header is enough, set `Options.Consumer`:
 
 ```go
@@ -61,7 +92,7 @@ Calls are grouped by route template, such as `/orders/{id}`, not by raw path. Th
 | Source | When |
 |---|---|
 | `Options.Route` | You set it, for a router the SDK can't read |
-| The `http.ServeMux` pattern | The middleware wraps the mux itself (method and host are left out) |
+| The router's route | The `http.ServeMux` pattern when the middleware wraps the mux itself (method and host are left out), or the route an adapter reads, such as `/orders/{id}` in chi or `/orders/:id` in gin. It's sent as written |
 | The raw path | Neither of the above. Update Prompt turns numbers, UUIDs and long hex ids into `{id}` |
 
 A call with no route that answers 404 isn't counted, so requests for paths your API doesn't have, such as scanners probing `/.env`, don't become endpoints. A `"/"` pattern matches every path, so calls it serves are reported as `/`.
