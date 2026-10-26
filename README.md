@@ -55,7 +55,7 @@ router.Use(updatepromptchi.Middleware(client))
 router.Get("/orders/{id}", getOrder)
 ```
 
-The gin and echo adapters need Go 1.25, like gin and echo themselves. gorilla/mux runs middleware only for calls that match a route, so calls it answers with 404 or 405 aren't counted.
+The echo adapter needs Go 1.25, like echo itself, and the gin adapter Go 1.26, for the security fixes in the `golang.org/x/net` that gin uses. gorilla/mux runs middleware only for calls that match a route, so calls it answers with 404 or 405 aren't counted.
 
 Another router can use `client.MiddlewareWithRoute` with a function that reads its route, and a framework whose handlers aren't `http.Handler`s can use `client.Begin`, the way the adapters do.
 
