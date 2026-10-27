@@ -95,6 +95,14 @@ type Client struct {
 	// nanoseconds, or 0
 	retryAt atomic.Int64
 
+	// signals is the last deprecation signals document read, or nil before
+	// the first
+	signals         atomic.Pointer[[]signalEntry]
+	signalsInterval time.Duration
+	// signalsDone is closed when the signals are no longer read, or nil when
+	// they never were
+	signalsDone chan struct{}
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
@@ -112,6 +120,8 @@ func New(options Options) *Client {
 	client := newClient(options)
 	if client.apiKey != "" {
 		go client.run()
+		client.signalsDone = make(chan struct{})
+		go client.runSignals()
 	} else {
 		close(client.done)
 		client.logger.Warn("Update Prompt: no API key, so calls are not reported. Set UPDATE_PROMPT_API_KEY or Options.APIKey.")
@@ -137,21 +147,22 @@ func newClient(options Options) *Client {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Client{
-		apiKey:     strings.TrimSpace(apiKey),
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		consumer:   options.Consumer,
-		route:      options.Route,
-		logger:     logger,
-		httpClient: &http.Client{Timeout: requestTimeout},
-		userAgent:  userAgent(),
-		interval:   sendInterval,
-		minBackoff: time.Second,
-		maxBackoff: time.Minute,
-		now:        time.Now,
-		counts:     map[reportKey]*tally{},
-		sendSlot:   make(chan struct{}, 1),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
+		apiKey:          strings.TrimSpace(apiKey),
+		baseURL:         strings.TrimRight(baseURL, "/"),
+		consumer:        options.Consumer,
+		route:           options.Route,
+		logger:          logger,
+		httpClient:      &http.Client{Timeout: requestTimeout},
+		userAgent:       userAgent(),
+		interval:        sendInterval,
+		signalsInterval: signalsInterval,
+		minBackoff:      time.Second,
+		maxBackoff:      time.Minute,
+		now:             time.Now,
+		counts:          map[reportKey]*tally{},
+		sendSlot:        make(chan struct{}, 1),
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 }
 
@@ -180,9 +191,14 @@ func (client *Client) Close(ctx context.Context) error {
 	client.closed = true
 	client.mu.Unlock()
 	client.stopOnce.Do(func() { close(client.stop) })
-	select {
-	case <-client.done:
-	case <-ctx.Done():
+	for _, done := range []chan struct{}{client.done, client.signalsDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
 	}
 	var err error
 	if client.apiKey != "" {

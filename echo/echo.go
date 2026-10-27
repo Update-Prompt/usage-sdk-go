@@ -22,12 +22,17 @@ import (
 )
 
 // Middleware counts every call to the server, by the route path it matched,
-// such as /orders/:id. Add it with Use on the server.
+// such as /orders/:id, and applies the deprecation signals to calls that match
+// a route. Add it with Use on the server.
 func Middleware(client *updateprompt.Client) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) (err error) {
 			request, end := client.Begin(c.Request())
 			c.SetRequest(request)
+			if route := routePath(c); route != "" && client.Signals(request).Apply(c.Response()) {
+				end(route, status(c, nil, true))
+				return nil
+			}
 			returned := false
 			// Deferred, so a call that panics is counted too, without recovering
 			// the panic: echo's recover middleware, if any, still sees it

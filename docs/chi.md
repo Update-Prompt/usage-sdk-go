@@ -38,9 +38,14 @@ router.Mount("/admin", adminRouter)
 | `DELETE /admin/users/7`, a route in a mounted router | `/admin/users/{id}` |
 | A wildcard route such as `/files/*` | `/files/*` |
 | A path with no route, at the top or in a mounted router, answered with 404 | Not counted |
+| The mount path itself, such as `/admin`, when the mounted router has no `/` route | Not counted |
 | A route called with a method it doesn't have (405) | The raw path, which Update Prompt turns into a route |
 
 Patterns are sent as written, so a pattern with a regular expression, such as `/orders/{id:[0-9]+}`, is reported that way.
+
+## Deprecation signals
+
+The middleware asks chi which route a call will match before the handler runs, so a sunset route is refused without calling its handler, also in mounted routers. Paths with no route and 405 answers get no signals. See [Deprecation signals](../README.md#deprecation-signals).
 
 ## Consumers
 

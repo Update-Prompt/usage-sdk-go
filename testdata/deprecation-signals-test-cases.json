@@ -1,0 +1,331 @@
+{
+  "description": "How a client applies a deprecation signals document to one call. `now` is when the response is sent; `consumerFirstCall` is the consumer's first call to any endpoint of the API, or null if it never called before. Calls without a consumer id count as one consumer, with their own first call. The client uses the last entry of `responses` whose `from` has passed and that applies to the consumer. `expected.refuse` and `expected.code` are the status and code to refuse with instead of the API's own response, or null to send the API's response. `expected.headers` are added to the response either way.",
+  "cases": [
+    {
+      "name": "not deprecated",
+      "document": {
+        "responses": []
+      },
+      "now": "2026-11-01T00:00:00Z",
+      "consumerFirstCall": "2026-01-01T00:00:00Z",
+      "expected": {
+        "refuse": null,
+        "code": null,
+        "headers": {}
+      }
+    },
+    {
+      "name": "deprecated without a sunset date",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000"
+            }
+          }
+        ]
+      },
+      "now": "2026-11-01T00:00:00Z",
+      "consumerFirstCall": "2026-01-01T00:00:00Z",
+      "expected": {
+        "refuse": null,
+        "code": null,
+        "headers": {
+          "Deprecation": "@1792575000"
+        }
+      }
+    },
+    {
+      "name": "known consumer, during the grace period",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2027-01-29T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 410,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          }
+        ]
+      },
+      "now": "2027-01-28T23:59:59Z",
+      "consumerFirstCall": "2026-01-01T00:00:00Z",
+      "expected": {
+        "refuse": null,
+        "code": null,
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+          "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+        }
+      }
+    },
+    {
+      "name": "new consumer, before the sunset date",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2027-01-29T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 410,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          }
+        ]
+      },
+      "now": "2026-11-01T00:00:00Z",
+      "consumerFirstCall": "2026-10-25T00:00:00Z",
+      "expected": {
+        "refuse": 403,
+        "code": "NEW_CONSUMERS_BLOCKED",
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+          "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+        }
+      }
+    },
+    {
+      "name": "call without a consumer id, when such calls came before",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2027-01-29T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 410,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          }
+        ]
+      },
+      "now": "2026-11-01T00:00:00Z",
+      "consumerFirstCall": "2026-01-01T00:00:00Z",
+      "expected": {
+        "refuse": null,
+        "code": null,
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+          "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+        }
+      }
+    },
+    {
+      "name": "call without a consumer id, when none came before",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2027-01-29T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 410,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          }
+        ]
+      },
+      "now": "2026-11-01T00:00:00Z",
+      "consumerFirstCall": null,
+      "expected": {
+        "refuse": 403,
+        "code": "NEW_CONSUMERS_BLOCKED",
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+          "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+        }
+      }
+    },
+    {
+      "name": "blocked for everyone, with 410",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          },
+          {
+            "from": "2027-01-29T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 410,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+              "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+            }
+          }
+        ]
+      },
+      "now": "2027-01-29T00:00:00Z",
+      "consumerFirstCall": "2026-01-01T00:00:00Z",
+      "expected": {
+        "refuse": 410,
+        "code": "API_SUNSET",
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT",
+          "Link": "<https://example.com/migrate>; rel=\"deprecation\"; type=\"text/html\""
+        }
+      }
+    },
+    {
+      "name": "blocked with 404, new consumer too",
+      "document": {
+        "responses": [
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "ALL",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT"
+            }
+          },
+          {
+            "from": "2026-10-21T09:30:00Z",
+            "appliesTo": "NEW",
+            "status": 403,
+            "code": "NEW_CONSUMERS_BLOCKED",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT"
+            }
+          },
+          {
+            "from": "2027-01-15T00:00:00Z",
+            "appliesTo": "ALL",
+            "status": 404,
+            "code": "API_SUNSET",
+            "headers": {
+              "Deprecation": "@1792575000",
+              "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT"
+            }
+          }
+        ]
+      },
+      "now": "2027-02-01T00:00:00Z",
+      "consumerFirstCall": "2026-10-25T00:00:00Z",
+      "expected": {
+        "refuse": 404,
+        "code": "API_SUNSET",
+        "headers": {
+          "Deprecation": "@1792575000",
+          "Sunset": "Fri, 15 Jan 2027 00:00:00 GMT"
+        }
+      }
+    }
+  ]
+}

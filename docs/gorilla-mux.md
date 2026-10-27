@@ -39,6 +39,10 @@ router.HandleFunc("/orders/{id}", getOrder).Methods("GET")
 
 Templates are sent as written, so a template with a regular expression, such as `/orders/{id:[0-9]+}`, is reported that way.
 
+## Deprecation signals
+
+gorilla/mux runs middleware only for calls that match a route, so every call the middleware sees can get signals, and a sunset route is refused without calling its handler. gorilla/mux's own 404 and 405 answers get no signals. See [Deprecation signals](../README.md#deprecation-signals).
+
 ## Consumers
 
 Call `updateprompt.SetConsumer(r, clientID)` in your authentication middleware, added with `Use` after the Update Prompt one, or set `Options.Consumer`. See [Consumers](../README.md#consumers).

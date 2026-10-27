@@ -42,6 +42,10 @@ e.GET("/orders/:id", getOrder)
 
 Routes are sent as echo writes them, with `:id` and `*`.
 
+## Deprecation signals
+
+echo matches the route before the middleware runs, so a sunset route is refused without calling its handler. echo's own 404 and 405 answers, including `RouteNotFound` routes, get no signals. See [Deprecation signals](../README.md#deprecation-signals).
+
 ## Consumers
 
 Call `updateprompt.SetConsumer(c.Request(), clientID)` in your authentication middleware, after the Update Prompt one, or set `Options.Consumer`. See [Consumers](../README.md#consumers).

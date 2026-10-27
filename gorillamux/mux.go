@@ -19,9 +19,10 @@ import (
 )
 
 // Middleware counts every call to a route of the router, by the route's path
-// template, such as /orders/{id}. Add it with Use on the top router. gorilla/mux
-// runs middleware only for calls that match a route, so calls that get its 404
-// or 405 aren't counted.
+// template, such as /orders/{id}, and applies the deprecation signals to them.
+// Add it with Use on the top router. gorilla/mux runs middleware only for calls
+// that match a route, so calls that get its 404 or 405 aren't counted and get
+// no signals.
 func Middleware(client *updateprompt.Client) mux.MiddlewareFunc {
 	return client.MiddlewareWithRoute(pathTemplate)
 }

@@ -5,6 +5,7 @@ Counts how often each consumer calls each endpoint of your Go HTTP API and repor
 - **One line to add.** Wrap your router; endpoints are discovered from the calls.
 - **Never in your way.** Counting is a memory update. Nothing blocks, slows or fails a request, and if Update Prompt can't be reached, counts are kept within a fixed limit and the rest are dropped.
 - **Little data.** Calls are counted per endpoint, consumer and minute, and sent every 10 seconds. No bodies, header values, query values or IP addresses ever leave your server.
+- **Tells your consumers.** Deprecation headers and sunset refusals you set in Update Prompt are added to your responses.
 - **Standard library only.** Adapters for chi, gin, echo and gorilla/mux are separate modules, so you only download the router you use.
 
 ## Install
@@ -85,6 +86,21 @@ A call with no route that answers 404 isn't counted, so requests for paths your 
 
 Query parameters are reported by name only, never by value. Names don't split an endpoint: each report lists the names its calls sent, up to 50.
 
+## Deprecation signals
+
+When you deprecate or sunset an API in Update Prompt, the SDK tells its consumers in your responses. It reads the API's deprecation signals once a minute and, for each call:
+
+| Signal | What the response gets |
+|---|---|
+| Deprecated | The signal's headers, such as `Deprecation`, `Sunset` and `Link`. Your handler answers as usual |
+| Sunset | The signal's status, such as `410 Gone`, with a `application/problem+json` body. Your handler isn't called |
+
+Signals apply to every call to a route your API has, including routes you add later. Only the router's own 404 and 405 answers, for paths and methods your API doesn't have, are left as they are, so every Update Prompt SDK answers the same. Wrap the router itself: when other handlers sit between the middleware and the mux, it can't tell which paths have a route, so every call gets the signals.
+
+Refused calls are still counted, but the code below the middleware doesn't run for them, so [`SetConsumer`](#consumers) isn't called. To see which consumers still call after the sunset, also set `Options.Consumer`.
+
+Until the first read succeeds, no signals apply. If a read fails, the last signals read stay in use. Signals for new consumers only aren't applied yet.
+
 ## Reporting calls by hand
 
 For a router without middleware support, another protocol, or a proxy, call `Record`:
@@ -110,6 +126,7 @@ A frozen or stopped process loses the counts it hasn't sent. In AWS Lambda and s
 | Retries | 429, 5xx and network errors, after `Retry-After` or a backoff from 1 s to 60 s, with the same `Idempotency-Key`, so nothing is counted twice |
 | Refused batches | Any other 4xx (such as a revoked key): dropped, not retried |
 | Memory | At most 10,000 distinct reports of at most 8 KB each. When full, calls already counted keep counting and new ones are dropped |
+| Signals | Read once a minute with `If-None-Match`, or later when the API asks with `Retry-After`. A failed read keeps the last signals |
 | Shutdown | `Close(ctx)` sends what's left until `ctx` is done |
 | Health | `client.Stats()` returns calls counted, sent and dropped. Pass `Options.Logger` for one log line per problem |
 
