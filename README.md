@@ -32,30 +32,16 @@ Get the API key from your API's page in Update Prompt and set it as `UPDATE_PROM
 
 ## Routers
 
-Wrap `http.ServeMux` with `client.Middleware`, as above. For another router, add its adapter as the router's first middleware, so it sees the route the router matched:
+Wrap `http.ServeMux` with `client.Middleware`, as above. For another router, get its adapter and add it as the router's first middleware, so it sees the route the router matched:
 
-| Router | Module | Add |
-|---|---|---|
-| [chi](https://github.com/go-chi/chi) | `github.com/Update-Prompt/usage-sdk-go/updatepromptchi` | `router.Use(updatepromptchi.Middleware(client))` |
-| [gin](https://github.com/gin-gonic/gin) | `github.com/Update-Prompt/usage-sdk-go/updatepromptgin` | `engine.Use(updatepromptgin.Middleware(client))` |
-| [echo](https://github.com/labstack/echo) v5 | `github.com/Update-Prompt/usage-sdk-go/updatepromptecho` | `e.Use(updatepromptecho.Middleware(client))` |
-| [gorilla/mux](https://github.com/gorilla/mux) | `github.com/Update-Prompt/usage-sdk-go/updatepromptmux` | `router.Use(updatepromptmux.Middleware(client))` |
+| Router | Add | Go | Docs |
+|---|---|---|---|
+| [chi](https://github.com/go-chi/chi) | `router.Use(updatepromptchi.Middleware(client))` | 1.24 | [docs/chi.md](docs/chi.md) |
+| [gin](https://github.com/gin-gonic/gin) | `engine.Use(updatepromptgin.Middleware(client))` | 1.26 | [docs/gin.md](docs/gin.md) |
+| [echo](https://github.com/labstack/echo) v5 | `e.Use(updatepromptecho.Middleware(client))` | 1.25 | [docs/echo.md](docs/echo.md) |
+| [gorilla/mux](https://github.com/gorilla/mux) | `router.Use(updatepromptmux.Middleware(client))` | 1.24 | [docs/gorilla-mux.md](docs/gorilla-mux.md) |
 
-```go
-import (
-	updateprompt "github.com/Update-Prompt/usage-sdk-go"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptchi"
-)
-
-client := updateprompt.New(updateprompt.Options{})
-defer client.Close(context.Background())
-
-router := chi.NewRouter()
-router.Use(updatepromptchi.Middleware(client))
-router.Get("/orders/{id}", getOrder)
-```
-
-The echo adapter needs Go 1.25, like echo itself, and the gin adapter Go 1.26, for the security fixes in the `golang.org/x/net` that gin uses. gorilla/mux runs middleware only for calls that match a route, so calls it answers with 404 or 405 aren't counted.
+Each adapter is a module of its own, such as `github.com/Update-Prompt/usage-sdk-go/updatepromptchi`, so you only download the router you use.
 
 Another router can use `client.MiddlewareWithRoute` with a function that reads its route, and a framework whose handlers aren't `http.Handler`s can use `client.Begin`, the way the adapters do.
 
@@ -75,7 +61,7 @@ func authenticate(next http.Handler) http.Handler {
 http.ListenAndServe(":8080", client.Middleware(authenticate(mux)))
 ```
 
-With gin, call `updateprompt.SetConsumer(c.Request, clientID)`, and with echo `updateprompt.SetConsumer(c.Request(), clientID)`.
+With gin and echo, see [docs/gin.md](docs/gin.md#consumers) and [docs/echo.md](docs/echo.md#consumers).
 
 Or, when a header is enough, set `Options.Consumer`:
 
