@@ -39,6 +39,10 @@ engine.GET("/orders/:id", getOrder)
 
 Routes are sent as gin writes them, with `:id` and `*path`.
 
+## Deprecation signals
+
+gin matches the route before the middleware runs, so a sunset route is refused and the rest of the chain is aborted. gin's own 404 and 405 answers get no signals. See [Deprecation signals](../README.md#deprecation-signals).
+
 ## Consumers
 
 Call `updateprompt.SetConsumer(c.Request, clientID)` in your authentication middleware, after the Update Prompt one, or set `Options.Consumer`. See [Consumers](../README.md#consumers).

@@ -42,6 +42,10 @@ router.Mount("/admin", adminRouter)
 
 Patterns are sent as written, so a pattern with a regular expression, such as `/orders/{id:[0-9]+}`, is reported that way.
 
+## Deprecation signals
+
+The middleware asks chi which route a call will match before the handler runs, so a sunset route is refused without calling its handler, also in mounted routers. Paths with no route and 405 answers get no signals. See [Deprecation signals](../README.md#deprecation-signals).
+
 ## Consumers
 
 Call `updateprompt.SetConsumer(r, clientID)` in your authentication middleware, below the Update Prompt one, or set `Options.Consumer`. See [Consumers](../README.md#consumers).
