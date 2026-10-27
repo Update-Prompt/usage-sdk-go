@@ -160,6 +160,46 @@ func TestSignalsUseTheLastDueEntryForAll(t *testing.T) {
 	}
 }
 
+// Given a refusal due earlier and a later entry whose status isn't an error,
+// with headers the response must not get from signals
+// When signals are applied
+// Then the later entry is used for its other headers and nothing is refused
+func TestSignalsKeepEntriesWithAnInvalidStatus(t *testing.T) {
+	api := newFakeSignalsAPI(t, `{"responses": [
+		{"from": "2026-01-01T00:00:00Z", "appliesTo": "ALL", "status": 410, "code": "API_SUNSET"},
+		{"from": "2026-02-01T00:00:00Z", "appliesTo": "ALL", "status": 200, "headers": {"Deprecation": "@1767225600", "Content-Length": "0", "transfer-encoding": "chunked", "Set-Cookie": "a=b"}}
+	]}`)
+	client := newClient(Options{APIKey: testAPIKey, BaseURL: api.URL})
+	client.now = func() time.Time { return testTime }
+	client.readSignals(t.Context(), "")
+
+	recorder := httptest.NewRecorder()
+	refused := client.Signals(newRequest("GET", "http://api.example.com/orders/1")).Apply(recorder)
+
+	expected := http.Header{"Deprecation": {"@1767225600"}}
+	if refused || !reflect.DeepEqual(recorder.Header(), expected) {
+		t.Errorf("Expected only %v, got refused %v, headers %v", expected, refused, recorder.Header())
+	}
+}
+
+// Given a running client
+// When it is closed
+// Then the signals are no longer read once Close returns
+func TestCloseStopsReadingSignals(t *testing.T) {
+	api := newFakeSignalsAPI(t, `{"responses": []}`)
+	client := New(Options{APIKey: testAPIKey, BaseURL: api.URL})
+
+	if err := client.Close(t.Context()); err != nil {
+		t.Fatalf("Expected Close to succeed, got %v", err)
+	}
+
+	select {
+	case <-client.signalsDone:
+	default:
+		t.Error("Expected the signals to be no longer read")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

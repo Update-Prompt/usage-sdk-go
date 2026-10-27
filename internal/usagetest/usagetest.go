@@ -47,8 +47,8 @@ func NewClient(t testing.TB) (*updateprompt.Client, *API) {
 const Sunset = `{"responses": [{"from": "2026-01-01T00:00:00Z", "appliesTo": "ALL", "status": 410, "code": "API_SUNSET", "headers": {"Deprecation": "@1767225600"}}]}`
 
 // NewClientWithSignals is like NewClient, with the API serving signals as its
-// deprecation signals document. signals must hold an entry for all consumers
-// that is due; it returns once the client has read it.
+// deprecation signals document. When signals hold any entry, one for all
+// consumers must be due: it returns once the client has read it.
 func NewClientWithSignals(t testing.TB, signals string) (*updateprompt.Client, *API) {
 	t.Helper()
 	api := &API{signals: signals}
@@ -56,7 +56,13 @@ func NewClientWithSignals(t testing.TB, signals string) (*updateprompt.Client, *
 	t.Cleanup(api.server.Close)
 	client := updateprompt.New(updateprompt.Options{APIKey: "up_usage_test", BaseURL: api.server.URL})
 	t.Cleanup(func() { _ = client.Close(context.Background()) })
-	if signals != `{"responses": []}` {
+	var document struct {
+		Responses []json.RawMessage `json:"responses"`
+	}
+	if err := json.Unmarshal([]byte(signals), &document); err != nil {
+		t.Fatalf("Expected a signals document, got %v", err)
+	}
+	if len(document.Responses) > 0 {
 		request := httptest.NewRequest(http.MethodGet, "http://api.example.com/", nil)
 		deadline := time.Now().Add(5 * time.Second)
 		for client.Signals(request) == (updateprompt.Signals{}) {
