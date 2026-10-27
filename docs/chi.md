@@ -5,7 +5,7 @@ Counts the calls to a [chi](https://github.com/go-chi/chi) v5 router by the rout
 ## Install
 
 ```sh
-go get github.com/Update-Prompt/usage-sdk-go/updatepromptchi
+go get github.com/Update-Prompt/usage-sdk-go/chi
 ```
 
 Requires Go 1.24 or later.
@@ -17,7 +17,7 @@ Add the middleware with `Use` on the top router, before any route, so it also se
 ```go
 import (
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptchi"
+	updatepromptchi "github.com/Update-Prompt/usage-sdk-go/chi"
 	"github.com/go-chi/chi/v5"
 )
 

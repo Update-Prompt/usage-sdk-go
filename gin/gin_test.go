@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
+	updatepromptgin "github.com/Update-Prompt/usage-sdk-go/gin"
 	"github.com/Update-Prompt/usage-sdk-go/internal/usagetest"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptgin"
 	"github.com/gin-gonic/gin"
 )
 

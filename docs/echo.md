@@ -5,7 +5,7 @@ Counts the calls to an [echo](https://github.com/labstack/echo) v5 server by the
 ## Install
 
 ```sh
-go get github.com/Update-Prompt/usage-sdk-go/updatepromptecho
+go get github.com/Update-Prompt/usage-sdk-go/echo
 ```
 
 Requires Go 1.25 or later, like echo v5. echo v4 isn't supported.
@@ -17,7 +17,7 @@ Add the middleware with `Use` on the server. Put it after your recover middlewar
 ```go
 import (
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptecho"
+	updatepromptecho "github.com/Update-Prompt/usage-sdk-go/echo"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 )

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
+	updatepromptmux "github.com/Update-Prompt/usage-sdk-go/gorillamux"
 	"github.com/Update-Prompt/usage-sdk-go/internal/usagetest"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptmux"
 	"github.com/gorilla/mux"
 )
 

@@ -5,7 +5,7 @@ Counts the calls to a [gorilla/mux](https://github.com/gorilla/mux) router by th
 ## Install
 
 ```sh
-go get github.com/Update-Prompt/usage-sdk-go/updatepromptmux
+go get github.com/Update-Prompt/usage-sdk-go/gorillamux
 ```
 
 Requires Go 1.24 or later.
@@ -17,7 +17,7 @@ Add the middleware with `Use` on the top router:
 ```go
 import (
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptmux"
+	updatepromptmux "github.com/Update-Prompt/usage-sdk-go/gorillamux"
 	"github.com/gorilla/mux"
 )
 

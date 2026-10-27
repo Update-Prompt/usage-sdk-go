@@ -1,4 +1,4 @@
-module github.com/Update-Prompt/usage-sdk-go/updatepromptgin
+module github.com/Update-Prompt/usage-sdk-go/gin
 
 // The oldest Go this adapter supports: that of the golang.org/x/net release
 // gin needs for its security fixes. Builds and CI use the toolchain below.

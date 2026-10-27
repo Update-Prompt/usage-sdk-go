@@ -1,4 +1,4 @@
-module github.com/Update-Prompt/usage-sdk-go/updatepromptecho
+module github.com/Update-Prompt/usage-sdk-go/echo
 
 // The oldest Go this adapter supports: echo's own minimum. Builds and CI use
 // the toolchain below.

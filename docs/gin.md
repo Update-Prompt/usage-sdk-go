@@ -5,7 +5,7 @@ Counts the calls to a [gin](https://github.com/gin-gonic/gin) engine by the rout
 ## Install
 
 ```sh
-go get github.com/Update-Prompt/usage-sdk-go/updatepromptgin
+go get github.com/Update-Prompt/usage-sdk-go/gin
 ```
 
 Requires Go 1.26 or later: the `golang.org/x/net` release with the security fixes gin needs does.
@@ -17,7 +17,7 @@ Add the middleware with `Use` on the engine, before any route. Put it after your
 ```go
 import (
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptgin"
+	updatepromptgin "github.com/Update-Prompt/usage-sdk-go/gin"
 	"github.com/gin-gonic/gin"
 )
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	updateprompt "github.com/Update-Prompt/usage-sdk-go"
+	updatepromptecho "github.com/Update-Prompt/usage-sdk-go/echo"
 	"github.com/Update-Prompt/usage-sdk-go/internal/usagetest"
-	"github.com/Update-Prompt/usage-sdk-go/updatepromptecho"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 )

@@ -41,7 +41,7 @@ Wrap `http.ServeMux` with `client.Middleware`, as above. For another router, get
 | [echo](https://github.com/labstack/echo) v5 | `e.Use(updatepromptecho.Middleware(client))` | 1.25 | [docs/echo.md](docs/echo.md) |
 | [gorilla/mux](https://github.com/gorilla/mux) | `router.Use(updatepromptmux.Middleware(client))` | 1.24 | [docs/gorilla-mux.md](docs/gorilla-mux.md) |
 
-Each adapter is a module of its own, such as `github.com/Update-Prompt/usage-sdk-go/updatepromptchi`, so you only download the router you use.
+Each adapter is a module of its own, such as `github.com/Update-Prompt/usage-sdk-go/chi`, so you only download the router you use. Its package is named `updatepromptchi` and so on, so it doesn't clash with the router's own package.
 
 Another router can use `client.MiddlewareWithRoute` with a function that reads its route, and a framework whose handlers aren't `http.Handler`s can use `client.Begin`, the way the adapters do.
 
