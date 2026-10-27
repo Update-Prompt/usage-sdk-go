@@ -21,14 +21,22 @@ import (
 )
 
 // Middleware counts every call to the router, by the route pattern it
-// matched, such as /orders/{id}. Add it with Use on the top router, before
-// any route, so it sees the full pattern of routes in mounted routers too.
+// matched, such as /orders/{id}, and applies the deprecation signals to calls
+// that match a route. Add it with Use on the top router, before any route, so
+// it sees the full pattern of routes in mounted routers too.
 func Middleware(client *updateprompt.Client) func(http.Handler) http.Handler {
 	var mounts sync.Map // route patterns → whether they end at a mounted router
 	return client.MiddlewareWithRoute(func(r *http.Request) string {
 		routeContext := chi.RouteContext(r.Context())
 		if routeContext == nil {
 			return ""
+		}
+		if len(routeContext.RoutePatterns) == 0 {
+			// Before routing: ask the router which route will match
+			if routeContext.Routes == nil {
+				return ""
+			}
+			return routeContext.Routes.Find(chi.NewRouteContext(), method(r, routeContext), path(r, routeContext))
 		}
 		pattern := routeContext.RoutePattern()
 		// A mounted router that matched nothing leaves its mount pattern, such
@@ -67,4 +75,26 @@ func endsAtMount(routes chi.Routes, patterns []string) bool {
 		routes = subRoutes
 	}
 	return false
+}
+
+// method returns the method chi routes r by
+func method(r *http.Request, routeContext *chi.Context) string {
+	if routeContext.RouteMethod != "" {
+		return routeContext.RouteMethod
+	}
+	return r.Method
+}
+
+// path returns the path chi routes r by
+func path(r *http.Request, routeContext *chi.Context) string {
+	switch {
+	case routeContext.RoutePath != "":
+		return routeContext.RoutePath
+	case r.URL.RawPath != "":
+		return r.URL.RawPath
+	case r.URL.Path != "":
+		return r.URL.Path
+	default:
+		return "/"
+	}
 }
