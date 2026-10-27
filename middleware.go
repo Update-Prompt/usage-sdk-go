@@ -18,6 +18,11 @@ import (
 // else the raw path, which Update Prompt turns into a route. A call with no
 // route that got 404 isn't counted, so requests for paths your API doesn't
 // have don't become endpoints.
+//
+// When your API is deprecated, the middleware adds the deprecation headers to
+// the responses and, once the API is no longer available, refuses calls
+// instead of calling next (see [Client.Signals]). A ServeMux's own 404 and 405
+// answers, for paths and methods it has no pattern for, are left as they are.
 func (client *Client) Middleware(next http.Handler) http.Handler {
 	return client.middleware(next, nil)
 }
@@ -25,9 +30,11 @@ func (client *Client) Middleware(next http.Handler) http.Handler {
 // MiddlewareWithRoute returns a middleware like [Client.Middleware] for a
 // router that puts the route it matched on the request, such as chi or
 // gorilla/mux. Add it inside the router, where that route can be seen. route
-// runs after the handler and returns the route template, or empty when the
-// router matched none; the ServeMux pattern isn't read. [Options.Route] still
-// comes first.
+// returns the route template the router matches for the request, or empty
+// when it matches none; the ServeMux pattern isn't read. It runs after the
+// handler, and also before it when there are deprecation signals to apply,
+// so it must work at both times. Calls with no route get no signals.
+// [Options.Route] still comes first.
 //
 // The adapters in this repository use it; you need it only for a router
 // without one.
@@ -46,17 +53,37 @@ func (client *Client) MiddlewareWithRoute(route func(*http.Request) string) func
 //
 // The adapters in this repository use it; you need it only for a framework
 // without one.
+//
+// To apply deprecation signals, call [Client.Signals] with the request it
+// returns before your handler, for calls the router matched to a route.
 func (client *Client) Begin(r *http.Request) (_ *http.Request, end func(route string, status int)) {
 	if client.apiKey == "" {
 		return r, func(string, int) {}
 	}
-	start := client.now()
+	r, c := client.begin(r)
+	return r, func(route string, status int) { c.end(route, status, false) }
+}
+
+// call is one call being counted
+type call struct {
+	client *Client
+	r      *http.Request
+	info   *requestInfo
+	start  time.Time
+	once   sync.Once
+}
+
+// begin starts counting a call and returns the request to pass on
+func (client *Client) begin(r *http.Request) (*http.Request, *call) {
 	info := &requestInfo{}
 	r = r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info))
-	var once sync.Once
-	return r, func(route string, status int) {
-		once.Do(func() { client.recordRequest(r, info, route, status, start) })
-	}
+	return r, &call{client: client, r: r, info: info, start: client.now()}
+}
+
+// end counts the call once. matched means a route matched even if route is
+// empty, so a 404 is counted.
+func (c *call) end(route string, status int, matched bool) {
+	c.once.Do(func() { c.client.recordRequest(c.r, c.info, route, status, matched, c.start) })
 }
 
 // middleware counts every call to next, taking the route from route when
@@ -68,9 +95,15 @@ func (client *Client) middleware(next http.Handler, route func(*http.Request) st
 			next.ServeHTTP(w, r)
 			return
 		}
-		r, end := client.Begin(r)
+		r, c := client.begin(r)
 		recorder := &statusRecorder{ResponseWriter: w}
 		writer := recorder.wrap()
+		if signals := client.Signals(r); signals.entry != nil {
+			if matched, ok := matchBefore(next, route, r); ok && signals.Apply(writer) {
+				c.end(matched, recorder.status, true)
+				return
+			}
+		}
 		returned := false
 		// Deferred, so a call that panics is counted too, without recovering the
 		// panic: net/http still sees it with its stack
@@ -90,11 +123,25 @@ func (client *Client) middleware(next http.Handler, route func(*http.Request) st
 			} else {
 				matched = patternRoute(r.Pattern)
 			}
-			end(matched, status)
+			c.end(matched, status, false)
 		}()
 		next.ServeHTTP(writer, r)
 		returned = true
 	})
+}
+
+// matchBefore returns the route the router will match for r, before it runs,
+// and whether it matches one. Without a router to ask, every call matches.
+func matchBefore(next http.Handler, route func(*http.Request) string, r *http.Request) (string, bool) {
+	if route != nil {
+		matched := route(r)
+		return matched, matched != ""
+	}
+	if mux, ok := next.(*http.ServeMux); ok {
+		_, pattern := mux.Handler(r)
+		return patternRoute(pattern), pattern != ""
+	}
+	return "", true
 }
 
 // SetConsumer sets the id of the consumer making r, such as a client id from
@@ -116,8 +163,9 @@ func ConsumerFromHeader(name string) func(*http.Request) string {
 }
 
 // recordRequest counts a request the middleware or Begin saw. route is the
-// router's template, used when Options.Route gives none.
-func (client *Client) recordRequest(r *http.Request, info *requestInfo, route string, status int, start time.Time) {
+// router's template, used when Options.Route gives none. matched means a
+// route matched even without a template, so a 404 is counted.
+func (client *Client) recordRequest(r *http.Request, info *requestInfo, route string, status int, matched bool, start time.Time) {
 	call := Call{Method: r.Method, Host: r.Host, Time: start}
 
 	if client.route != nil {
@@ -127,7 +175,7 @@ func (client *Client) recordRequest(r *http.Request, info *requestInfo, route st
 		call.Route = route
 	}
 	if call.Route == "" {
-		if status == http.StatusNotFound {
+		if status == http.StatusNotFound && !matched {
 			return
 		}
 		call.Path = r.URL.EscapedPath()
