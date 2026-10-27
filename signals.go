@@ -50,8 +50,7 @@ func (client *Client) Signals(r *http.Request) Signals {
 	now := client.now()
 	var picked *signalEntry
 	for i := range *entries {
-		entry := &(*entries)[i]
-		if entry.AppliesTo == "ALL" && !entry.From.After(now) {
+		if entry := &(*entries)[i]; !entry.From.After(now) {
 			picked = entry
 		}
 	}
@@ -109,6 +108,7 @@ func refusal(status int, code string) problem {
 // runSignals reads the deprecation signals now and then every interval until
 // Close
 func (client *Client) runSignals() {
+	defer close(client.signalsDone)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -182,17 +182,21 @@ func (client *Client) readSignals(ctx context.Context, etag string) (string, tim
 	}
 }
 
-// validEntries leaves out headers that can't be sent and refusals with a
-// status that isn't an error
+// validEntries keeps the entries for all consumers, without headers that
+// can't or mustn't be set and without a status that isn't an error, so such
+// an entry still replaces the ones before it
 func validEntries(entries []signalEntry) []signalEntry {
 	valid := make([]signalEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Status != 0 && (entry.Status < 400 || entry.Status > 599) {
+		if entry.AppliesTo != "ALL" {
 			continue
+		}
+		if entry.Status < 400 || entry.Status > 599 {
+			entry.Status, entry.Code = 0, ""
 		}
 		headers := make(map[string]string, len(entry.Headers))
 		for name, value := range entry.Headers {
-			if validHeaderName(name) && validHeaderValue(value) {
+			if validHeaderName(name) && validHeaderValue(value) && !reservedHeaders[http.CanonicalHeaderKey(name)] {
 				headers[name] = value
 			}
 		}
@@ -200,6 +204,22 @@ func validEntries(entries []signalEntry) []signalEntry {
 		valid = append(valid, entry)
 	}
 	return valid
+}
+
+// reservedHeaders frame the response or the connection, or are your
+// handler's own, so signals never set them
+var reservedHeaders = map[string]bool{
+	"Connection":        true,
+	"Content-Encoding":  true,
+	"Content-Length":    true,
+	"Content-Type":      true,
+	"Keep-Alive":        true,
+	"Proxy-Connection":  true,
+	"Set-Cookie":        true,
+	"Te":                true,
+	"Trailer":           true,
+	"Transfer-Encoding": true,
+	"Upgrade":           true,
 }
 
 // validHeaderName tells whether name is an HTTP token

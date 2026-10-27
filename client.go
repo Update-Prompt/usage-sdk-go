@@ -99,6 +99,9 @@ type Client struct {
 	// the first
 	signals         atomic.Pointer[[]signalEntry]
 	signalsInterval time.Duration
+	// signalsDone is closed when the signals are no longer read, or nil when
+	// they never were
+	signalsDone chan struct{}
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -117,6 +120,7 @@ func New(options Options) *Client {
 	client := newClient(options)
 	if client.apiKey != "" {
 		go client.run()
+		client.signalsDone = make(chan struct{})
 		go client.runSignals()
 	} else {
 		close(client.done)
@@ -187,9 +191,14 @@ func (client *Client) Close(ctx context.Context) error {
 	client.closed = true
 	client.mu.Unlock()
 	client.stopOnce.Do(func() { close(client.stop) })
-	select {
-	case <-client.done:
-	case <-ctx.Done():
+	for _, done := range []chan struct{}{client.done, client.signalsDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
 	}
 	var err error
 	if client.apiKey != "" {
