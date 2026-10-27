@@ -69,6 +69,31 @@ func TestMiddlewareTakesTheConsumer(t *testing.T) {
 	})
 }
 
+// Given a chi router with the middleware and an API past its sunset
+// When a route and a path with no route are called
+// Then the route is refused with 410 before its handler and counted, and the
+// other gets chi's 404 without signals
+func TestMiddlewareAppliesSignals(t *testing.T) {
+	client, api := usagetest.NewClientWithSignals(t, usagetest.Sunset)
+	called := false
+	router := chi.NewRouter()
+	router.Use(updatepromptchi.Middleware(client))
+	router.Get("/orders/{id}", func(http.ResponseWriter, *http.Request) { called = true })
+	router.Mount("/admin", adminRouter())
+
+	route := record(router, "GET", "http://api.example.com/orders/1")
+	missing := record(router, "GET", "http://api.example.com/admin/.env")
+	if route.Code != http.StatusGone || route.Header().Get("Deprecation") != "@1767225600" || called {
+		t.Errorf("Expected 410 with Deprecation, without the handler, got %d %v, handler called %v", route.Code, route.Header(), called)
+	}
+	if missing.Code != http.StatusNotFound || missing.Header().Get("Deprecation") != "" {
+		t.Errorf("Expected the router's 404 without Deprecation, got %d %v", missing.Code, missing.Header())
+	}
+	expectReports(t, api.Reports(t, client), []usagetest.Report{
+		{Method: "GET", Host: "api.example.com", Route: "/orders/{id}", Count: 1},
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -99,4 +124,11 @@ func expectReports(t *testing.T, got, expected []usagetest.Report) {
 	if !reflect.DeepEqual(got, expected) {
 		t.Errorf("Expected reports %+v, got %+v", expected, got)
 	}
+}
+
+// record calls handler and returns its response
+func record(handler http.Handler, method, url string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(method, url, nil))
+	return recorder
 }
