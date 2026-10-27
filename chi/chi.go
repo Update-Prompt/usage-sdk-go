@@ -25,56 +25,67 @@ import (
 // that match a route. Add it with Use on the top router, before any route, so
 // it sees the full pattern of routes in mounted routers too.
 func Middleware(client *updateprompt.Client) func(http.Handler) http.Handler {
-	var mounts sync.Map // route patterns → whether they end at a mounted router
+	var known sync.Map // routers → the method and pattern of each of their routes
 	return client.MiddlewareWithRoute(func(r *http.Request) string {
 		routeContext := chi.RouteContext(r.Context())
-		if routeContext == nil {
+		if routeContext == nil || routeContext.Routes == nil {
 			return ""
 		}
+		method := method(r, routeContext)
+		var pattern string
 		if len(routeContext.RoutePatterns) == 0 {
 			// Before routing: ask the router which route will match
-			if routeContext.Routes == nil {
-				return ""
-			}
-			return routeContext.Routes.Find(chi.NewRouteContext(), method(r, routeContext), path(r, routeContext))
+			pattern = find(routeContext.Routes, method, path(r, routeContext))
+		} else {
+			pattern = routeContext.RoutePattern()
 		}
-		pattern := routeContext.RoutePattern()
-		// A mounted router that matched nothing leaves its mount pattern, such
-		// as /admin/*, which isn't a route
-		if strings.HasSuffix(pattern, "*") && routeContext.Routes != nil {
-			key := strings.Join(routeContext.RoutePatterns, " ")
-			mount, ok := mounts.Load(key)
-			if !ok {
-				mount, _ = mounts.LoadOrStore(key, endsAtMount(routeContext.Routes, routeContext.RoutePatterns))
-			}
-			if mount.(bool) {
-				return ""
-			}
+		if pattern == "" {
+			return ""
 		}
-		return pattern
+		return route(&known, routeContext.Routes, method, pattern)
 	})
 }
 
-// endsAtMount tells whether the last of patterns, followed down from routes,
-// is where a router is mounted
-func endsAtMount(routes chi.Routes, patterns []string) bool {
-	for i, pattern := range patterns {
-		var subRoutes chi.Routes
-		for _, route := range routes.Routes() {
-			if route.Pattern == pattern {
-				subRoutes = route.SubRoutes
-				break
-			}
-		}
-		if subRoutes == nil {
-			return false
-		}
-		if i == len(patterns)-1 {
-			return true
-		}
-		routes = subRoutes
+// findContexts are reused by find, which runs for every call while there are
+// deprecation signals
+var findContexts = sync.Pool{New: func() any { return chi.NewRouteContext() }}
+
+// find returns the pattern router will match for method and path, or empty
+func find(router chi.Routes, method, path string) string {
+	routeContext := findContexts.Get().(*chi.Context)
+	routeContext.Reset()
+	pattern := router.Find(routeContext, method, path)
+	findContexts.Put(routeContext)
+	return pattern
+}
+
+// route returns the route of router that pattern names, or empty when it
+// names none. chi matches patterns that aren't routes: the mount pattern of a
+// mounted router that matched nothing, such as /admin/*, and the stubs Mount
+// adds for the mount path itself, such as /admin, which chi passes on to the
+// mounted router's / route.
+func route(known *sync.Map, router chi.Routes, method, pattern string) string {
+	routes, ok := known.Load(router)
+	if !ok {
+		// Read once: chi routers are set up before they serve
+		routes, _ = known.LoadOrStore(router, walk(router))
 	}
-	return false
+	for _, candidate := range []string{pattern, strings.TrimSuffix(pattern, "/") + "/"} {
+		if routes.(map[string]bool)[method+" "+candidate] {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// walk returns the method and full pattern of every route of router
+func walk(router chi.Routes) map[string]bool {
+	routes := map[string]bool{}
+	_ = chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		routes[method+" "+route] = true
+		return nil
+	})
+	return routes
 }
 
 // method returns the method chi routes r by
