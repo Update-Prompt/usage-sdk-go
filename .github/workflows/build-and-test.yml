@@ -25,13 +25,14 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
-            # Go source, modules, the lint config and this workflow
+            # Go source, modules, the lint config, this workflow and its script
             go:
               - '**/*.go'
               - '**/go.mod'
               - '**/go.sum'
               - '.golangci.yml'
               - '.github/workflows/build-and-test.yml'
+              - '.github/scripts/each-module.sh'
 
   validate:
     name: go.mod is tidy
@@ -43,11 +44,16 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # In the SDK and each adapter, which are modules of their own
       - name: Check that go.mod and go.sum are tidy
         run: |
-          go mod tidy
-          git diff --exit-code go.mod || { echo "::error::go.mod isn't tidy. Run 'go mod tidy' and commit the result."; exit 1; }
-          if [ -f go.sum ]; then git diff --exit-code go.sum || { echo "::error::go.sum isn't tidy. Run 'go mod tidy' and commit the result."; exit 1; }; fi
+          .github/scripts/each-module.sh go mod tidy
+          # Also catches a go.sum that tidy created but was never committed
+          if [ -n "$(git status --porcelain -- '*go.mod' '*go.sum')" ]; then
+            git status --short -- '*go.mod' '*go.sum'
+            echo "::error::A go.mod or go.sum isn't tidy. Run 'go mod tidy' in its folder and commit the result."
+            exit 1
+          fi
 
   lint:
     name: Go lint
@@ -65,6 +71,10 @@ jobs:
         with:
           # renovate: datasource=github-releases depName=golangci/golangci-lint
           version: v2.14.0
+          install-only: true
+      # In the SDK and each adapter; golangci-lint finds .golangci.yml in the parent folder
+      - name: Lint every module
+        run: .github/scripts/each-module.sh golangci-lint run ./...
 
   test:
     name: tests
@@ -76,24 +86,24 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # In the SDK and each adapter, which are modules of their own
       - name: Vet the Go code
-        run: go vet ./...
+        run: .github/scripts/each-module.sh go vet ./...
       - name: Run the tests
-        run: go test -race ./...
+        run: .github/scripts/each-module.sh go test -race ./...
 
-  # The go line in go.mod is the oldest Go apps may use, so the code must still build and pass there
+  # The go line in each go.mod is the oldest Go apps may use with that module, so the code must
+  # still build and pass there
   test-oldest-go:
     name: tests on the oldest Go
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.go == 'true') }}
     runs-on: ubuntu-latest
-    env:
-      # Use the installed Go, not the newer toolchain go.mod names
-      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.24'
-      - name: Run the tests
-        run: go test -race ./...
+          go-version-file: go.mod
+      # GOTOOLCHAIN makes Go fetch and use exactly that version, not the newer toolchain go.mod names
+      - name: Run the tests on each module's go line
+        run: .github/scripts/each-module.sh sh -c 'GOTOOLCHAIN="$OLDEST_GO" go test -race ./...'

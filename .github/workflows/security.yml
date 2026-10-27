@@ -65,6 +65,7 @@ jobs:
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/security.yml'
+              - '.github/scripts/each-module.sh'
 
   govulncheck:
     name: vulnerabilities
@@ -73,11 +74,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Fails when the code calls a function with a known vulnerability
-      - uses: golang/govulncheck-action@v1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          repo-checkout: false
-          # Scan with the Go version from go.mod. The action defaults to "stable",
-          # which would override go-version-file.
-          go-version-input: ''
           go-version-file: go.mod
+      - name: Install govulncheck
+        env:
+          # renovate: datasource=go depName=golang.org/x/vuln
+          GOVULNCHECK_VERSION: v1.9.0
+        run: go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+      # Fails when the code calls a function with a known vulnerability, in the SDK or an adapter
+      - name: Scan for vulnerabilities
+        run: .github/scripts/each-module.sh govulncheck ./...
