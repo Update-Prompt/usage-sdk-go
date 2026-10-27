@@ -95,9 +95,11 @@ When you deprecate or sunset an API in Update Prompt, the SDK tells its consumer
 | Deprecated | The signal's headers, such as `Deprecation`, `Sunset` and `Link`. Your handler answers as usual |
 | Sunset | The signal's status, such as `410 Gone`, with a `application/problem+json` body. Your handler isn't called |
 
-Signals only apply to calls the router matched to a route. The router's own 404 and 405 answers are left as they are, so every Update Prompt SDK answers the same. Without a router, every call counts as matched.
+Signals only apply to calls the router matched to a route. The router's own 404 and 405 answers are left as they are, so every Update Prompt SDK answers the same. Wrap the router itself: when other handlers sit between the middleware and the mux, it can't tell which paths have a route, so every call gets the signals.
 
-Until the first read succeeds, no signals apply. If a read fails, the last signals read stay in use. Refused calls are still counted. Signals for new consumers only aren't applied yet.
+Refused calls are still counted, but the code below the middleware doesn't run for them, so [`SetConsumer`](#consumers) isn't called. To see which consumers still call after the sunset, also set `Options.Consumer`.
+
+Until the first read succeeds, no signals apply. If a read fails, the last signals read stay in use. Signals for new consumers only aren't applied yet.
 
 ## Reporting calls by hand
 
