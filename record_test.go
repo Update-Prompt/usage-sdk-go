@@ -2,6 +2,7 @@ package updateprompt
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -168,8 +169,35 @@ func TestRecordDropsNewCallsWhenFull(t *testing.T) {
 	expectStats(t, client, Stats{Counted: maxPendingReports + 1, Dropped: 1})
 }
 
-// Given more than 1,000 distinct calls, and calls with very long routes
-// When they are flushed
+// Given as many distinct calls as the limit allows, queued after a flush that couldn't send them
+// When another distinct call is recorded
+// Then it is dropped, since the queued reports are still in memory
+func TestRecordCountsQueuedReportsAgainstTheLimit(t *testing.T) {
+	gateway := newFakeGateway(t)
+	// The first batch's answer is held back until the flush gives up
+	gateway.answer(fakeAnswer{status: http.StatusAccepted, delay: time.Minute})
+	client := newTestClient(gateway)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		_ = client.Close(ctx)
+	})
+	for i := range maxPendingReports {
+		client.Record(Call{Method: "GET", Host: "h", Route: "/r", Consumer: consumerID(i), Time: testTime})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := client.Flush(ctx); err == nil {
+		t.Fatal("Expected the flush to fail")
+	}
+
+	client.Record(Call{Method: "GET", Host: "h", Route: "/new", Time: testTime})
+
+	expectStats(t, client, Stats{Counted: maxPendingReports, Dropped: 1})
+}
+
+// Given more than 1,000 distinct calls, then fewer than 1,000 calls with very long routes
+// When each set is flushed
 // Then every batch holds at most 1,000 reports and is under 1 MB
 func TestRecordSplitsBatches(t *testing.T) {
 	gateway := newFakeGateway(t)
@@ -178,24 +206,18 @@ func TestRecordSplitsBatches(t *testing.T) {
 	for i := range 2500 {
 		client.Record(Call{Method: "GET", Host: "h", Route: "/r", Consumer: consumerID(i), Time: testTime})
 	}
+	flush(t, client)
+	short := gateway.batches("/v1/usage")
+	// Fewer than 1,000 reports, but about 1.8 MB: only the size limit splits them
 	long := "/" + strings.Repeat("x", 2000)
 	for i := range 900 {
 		client.Record(Call{Method: "GET", Host: "h", Route: long, Consumer: consumerID(i), Time: testTime})
 	}
 	flush(t, client)
+	all := gateway.batches("/v1/usage")
 
-	batches := gateway.batches("/v1/usage")
-	total := 0
-	for _, b := range batches {
-		if b.reports > maxBatchReports || b.bytes >= 1<<20 {
-			t.Errorf("Expected at most %d reports under 1 MB, got %d reports, %d bytes",
-				maxBatchReports, b.reports, b.bytes)
-		}
-		total += b.reports
-	}
-	if total != 3400 || len(batches) < 4 {
-		t.Errorf("Expected 3,400 reports in at least 4 batches, got %d in %d", total, len(batches))
-	}
+	expectBatches(t, short, 3, 2500)
+	expectBatches(t, all[len(short):], 2, 900)
 }
 
 // Given a closed client
@@ -230,5 +252,26 @@ func TestRecordWithoutAPIKeyDoesNothing(t *testing.T) {
 	expectStats(t, client, Stats{})
 	if got := gateway.requestCount(); got != 0 {
 		t.Errorf("Expected no requests, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// expectBatches checks that the batches hold the reports in that many batches, each
+// with at most 1,000 reports and under 1 MB
+func expectBatches(t *testing.T, batches []receivedBatch, count, reports int) {
+	t.Helper()
+	total := 0
+	for _, b := range batches {
+		if b.reports > maxBatchReports || b.bytes >= 1<<20 {
+			t.Errorf("Expected at most %d reports under 1 MB, got %d reports, %d bytes",
+				maxBatchReports, b.reports, b.bytes)
+		}
+		total += b.reports
+	}
+	if total != reports || len(batches) != count {
+		t.Errorf("Expected %d reports in %d batches, got %d in %d", reports, count, total, len(batches))
 	}
 }
