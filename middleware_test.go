@@ -1,8 +1,11 @@
 package updateprompt
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +172,60 @@ func TestMiddlewareKeepsTheWriterInterfaces(t *testing.T) {
 	}
 }
 
+// Given writers that can flush, hijack, both, or neither
+// When a handler checks the writer it gets through the middleware, and hijacks when it can
+// Then it can do exactly what the writer below can, and the hijack reaches that writer
+func TestMiddlewareKeepsHijackers(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+	cases := []struct {
+		name              string
+		writer            http.ResponseWriter
+		flusher, hijacker bool
+	}{
+		{"flush only", httptest.NewRecorder(), true, false},
+		{"hijack only", hijackWriter{plainWriter{httptest.NewRecorder()}}, false, true},
+		{"flush and hijack", flushHijackWriter{httptest.NewRecorder()}, true, true},
+		{"neither", plainWriter{httptest.NewRecorder()}, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			handler := client.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, ok := w.(http.Flusher); ok != c.flusher {
+					t.Errorf("Expected http.Flusher %v, got %v", c.flusher, ok)
+				}
+				hijacker, ok := w.(http.Hijacker)
+				if ok != c.hijacker {
+					t.Errorf("Expected http.Hijacker %v, got %v", c.hijacker, ok)
+				}
+				if ok {
+					if _, _, err := hijacker.Hijack(); !errors.Is(err, errHijacked) {
+						t.Errorf("Expected the hijack to reach the writer below, got %v", err)
+					}
+				}
+			}))
+			handler.ServeHTTP(c.writer, httptest.NewRequest("GET", "http://h/socket", nil))
+		})
+	}
+}
+
+// Given a handler without any router that sends 103 Early Hints, then 404
+// When it is called
+// Then the 404 is the call's status, so it isn't counted
+func TestMiddlewareTakesTheStatusAfterAn1xx(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+	handler := client.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	serve(handler, "GET", "http://api.example.com/.env")
+	flush(t, client)
+
+	expectStats(t, client, Stats{})
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -196,3 +253,19 @@ func expectReportSet(t *testing.T, got []report, expected map[string]report) {
 		expectReports(t, []report{r}, []report{expected[r.Route]})
 	}
 }
+
+// plainWriter is a writer that can neither flush nor hijack
+type plainWriter struct{ http.ResponseWriter }
+
+// hijackWriter is a writer that can hijack but not flush
+type hijackWriter struct{ plainWriter }
+
+func (hijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) { return nil, nil, errHijacked }
+
+// flushHijackWriter is a writer that can flush and hijack
+type flushHijackWriter struct{ *httptest.ResponseRecorder }
+
+func (flushHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) { return nil, nil, errHijacked }
+
+// errHijacked shows that a hijack reached the test's writer
+var errHijacked = errors.New("hijacked")

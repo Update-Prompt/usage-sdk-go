@@ -25,11 +25,12 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
-            # Go source, modules, the lint config, this workflow and its script
+            # Go source, modules, test data, the lint config, this workflow and its script
             go:
               - '**/*.go'
               - '**/go.mod'
               - '**/go.sum'
+              - '**/testdata/**'
               - '.golangci.yml'
               - '.github/workflows/build-and-test.yml'
               - '.github/scripts/each-module.sh'
