@@ -3,7 +3,7 @@ module github.com/Update-Prompt/usage-sdk-go/gorillamux
 // The oldest Go this adapter supports. Builds and CI use the toolchain below.
 go 1.24
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/Update-Prompt/usage-sdk-go v0.1.0

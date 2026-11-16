@@ -4,4 +4,4 @@ module github.com/Update-Prompt/usage-sdk-go
 // Builds and CI use the toolchain below.
 go 1.24
 
-toolchain go1.27.3
+toolchain go1.27.4
