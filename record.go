@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,20 @@ type Call struct {
 	QueryParams []string
 	// Time is when the call was made. Zero means now.
 	Time time.Time
+	// Applied is what the call's response got from the deprecation signals.
+	// Nil means unknown, such as before the signals were read.
+	Applied *Applied
+}
+
+// Applied is what a call's response got from the deprecation signals, for
+// [Call]. Update Prompt shows how many calls got what they should.
+type Applied struct {
+	// Headers are the names of the headers added from the signals. Never list
+	// other headers of the response; values aren't reported either.
+	Headers []string
+	// Status is the status of the refusal sent instead of your handler's
+	// response, or 0 when your handler answered
+	Status int
 }
 
 // reportKind is the Usage API endpoint a report is sent to
@@ -47,6 +62,41 @@ type reportKey struct {
 	endpoint string // the route, or the raw path
 	consumer string
 	minute   int64 // Unix seconds, rounded down to the minute
+	// applied is the call's Applied as appliedKey gives it, so calls that got
+	// different responses are reported apart
+	applied string
+}
+
+// appliedKey turns applied into a comparable key: empty for unknown, else the
+// status and the header names, sorted and without duplicates
+func appliedKey(applied *Applied) string {
+	if applied == nil {
+		return ""
+	}
+	names := slices.Clone(applied.Headers)
+	slices.Sort(names)
+	return strconv.Itoa(applied.Status) + ":" + strings.Join(slices.Compact(names), ",")
+}
+
+// reportApplied is a report's applied as the Usage API takes it
+type reportApplied struct {
+	Headers []string `json:"headers"`
+	Status  int      `json:"status,omitempty"`
+}
+
+// parseAppliedKey turns an appliedKey back into what the report sends, or nil
+// for unknown
+func parseAppliedKey(key string) *reportApplied {
+	status, names, found := strings.Cut(key, ":")
+	if !found {
+		return nil
+	}
+	applied := &reportApplied{Headers: []string{}}
+	applied.Status, _ = strconv.Atoi(status)
+	if names != "" {
+		applied.Headers = strings.Split(names, ",")
+	}
+	return applied
 }
 
 // tally is what a report adds up: its calls and the query parameter names they
@@ -85,12 +135,13 @@ func (client *Client) Record(call Call) {
 		endpoint: call.Route,
 		consumer: call.Consumer,
 		minute:   at.Unix() - at.Unix()%60,
+		applied:  appliedKey(call.Applied),
 	}
 	if call.Route == "" {
 		key.kind = pathReport
 		key.endpoint = call.Path
 	}
-	if len(key.method)+len(key.host)+len(key.endpoint)+len(key.consumer) > maxKeyBytes {
+	if len(key.method)+len(key.host)+len(key.endpoint)+len(key.consumer)+len(key.applied) > maxKeyBytes {
 		client.dropped.Add(1)
 		client.logOnce("a call's host, route, path or consumer is too long to report, so it is dropped",
 			"limit_bytes", maxKeyBytes)
@@ -174,14 +225,15 @@ type batch struct {
 
 // report is one report as the Usage API takes it
 type report struct {
-	Method      string   `json:"method"`
-	Host        string   `json:"host"`
-	Route       string   `json:"route,omitempty"`
-	Path        string   `json:"path,omitempty"`
-	Consumer    string   `json:"consumer,omitempty"`
-	QueryParams []string `json:"queryParams,omitempty"`
-	Timestamp   string   `json:"timestamp"`
-	Count       uint64   `json:"count"`
+	Method      string         `json:"method"`
+	Host        string         `json:"host"`
+	Route       string         `json:"route,omitempty"`
+	Path        string         `json:"path,omitempty"`
+	Consumer    string         `json:"consumer,omitempty"`
+	QueryParams []string       `json:"queryParams,omitempty"`
+	Timestamp   string         `json:"timestamp"`
+	Count       uint64         `json:"count"`
+	Applied     *reportApplied `json:"applied,omitempty"`
 }
 
 // makeBatches turns counts into batches of at most maxBatchReports reports and
@@ -238,6 +290,7 @@ func (key reportKey) report(t *tally) report {
 		Consumer:  key.consumer,
 		Timestamp: time.Unix(key.minute, 0).UTC().Format(time.RFC3339),
 		Count:     t.calls,
+		Applied:   parseAppliedKey(key.applied),
 	}
 	if key.kind == routeReport {
 		r.Route = key.endpoint

@@ -29,6 +29,42 @@ func TestRecordAddsUpTheSameCall(t *testing.T) {
 	expectStats(t, client, Stats{Counted: 3, Sent: 3})
 }
 
+// Given calls whose Applied lists the same headers in another order or twice,
+// one with a status, and one without Applied
+// When they are flushed
+// Then the same headers add up, sorted and once, and the others are reports of
+// their own, the one without Applied leaving the field out
+func TestRecordCountsPerApplied(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+
+	base := Call{Method: "GET", Host: "api.example.com", Route: "/orders", Time: testTime}
+	for _, applied := range []*Applied{
+		{Headers: []string{"Sunset", "Deprecation"}},
+		{Headers: []string{"Deprecation", "Sunset", "Sunset"}},
+		{Headers: []string{"Deprecation"}, Status: 410},
+		nil,
+	} {
+		call := base
+		call.Applied = applied
+		client.Record(call)
+	}
+	flush(t, client)
+
+	got := map[string]report{}
+	for _, report := range gateway.reports("/v1/usage") {
+		key := "unknown"
+		if report.Applied != nil {
+			key = strings.Join(report.Applied.Headers, ",") + " " + http.StatusText(report.Applied.Status)
+		}
+		got[key] = report
+	}
+	if len(got) != 3 || got["Deprecation,Sunset "].Count != 2 || got["Deprecation Gone"].Count != 1 ||
+		got["unknown"].Count != 1 {
+		t.Errorf("Expected 2 calls with Deprecation and Sunset, 1 with a 410 and 1 unknown, got %+v", got)
+	}
+}
+
 // Given calls that differ in one field each
 // When they are flushed
 // Then each becomes its own report
