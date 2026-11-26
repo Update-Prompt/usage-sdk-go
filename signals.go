@@ -32,6 +32,9 @@ type signalEntry struct {
 // the response. Get them with [Client.Signals].
 type Signals struct {
 	entry *signalEntry
+	// info is the call's, when the middleware or Begin saw it, to report what
+	// Apply applied
+	info *requestInfo
 }
 
 // Signals returns the deprecation signals for r, a call to your API that
@@ -47,6 +50,11 @@ func (client *Client) Signals(r *http.Request) Signals {
 	if entries == nil {
 		return Signals{}
 	}
+	info, _ := r.Context().Value(requestInfoKey{}).(*requestInfo)
+	if info != nil {
+		// Read, so the call reports what Apply adds, or nothing
+		info.setAppliedOnce(&Applied{Headers: []string{}})
+	}
 	now := client.now()
 	var picked *signalEntry
 	for i := range *entries {
@@ -54,7 +62,7 @@ func (client *Client) Signals(r *http.Request) Signals {
 			picked = entry
 		}
 	}
-	return Signals{entry: picked}
+	return Signals{entry: picked, info: info}
 }
 
 // Apply adds the signals' headers to w. When the signals refuse the call, it
@@ -67,8 +75,16 @@ func (signals Signals) Apply(w http.ResponseWriter) (refused bool) {
 		return false
 	}
 	header := w.Header()
+	applied := &Applied{Headers: make([]string, 0, len(entry.Headers))}
 	for name, value := range entry.Headers {
 		header.Set(name, value)
+		applied.Headers = append(applied.Headers, http.CanonicalHeaderKey(name))
+	}
+	if entry.Status != 0 {
+		applied.Status = entry.Status
+	}
+	if signals.info != nil {
+		signals.info.setApplied(applied)
 	}
 	if entry.Status == 0 {
 		return false

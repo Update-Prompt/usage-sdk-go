@@ -182,6 +182,8 @@ func (client *Client) recordRequest(r *http.Request, info *requestInfo, route st
 	}
 	call.QueryParams = queryParamNames(r.URL.RawQuery)
 
+	call.Applied = info.getApplied()
+
 	if consumer, ok := info.getConsumer(); ok {
 		call.Consumer = consumer
 	} else if client.consumer != nil {
@@ -227,6 +229,31 @@ type requestInfo struct {
 	mu          sync.Mutex
 	consumer    string
 	consumerSet bool
+	// applied is what the call's response got from the deprecation signals, nil
+	// until they were read for it
+	applied *Applied
+}
+
+// setApplied records what the signals applied to the call
+func (info *requestInfo) setApplied(applied *Applied) {
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	info.applied = applied
+}
+
+// setAppliedOnce records applied unless something was recorded already
+func (info *requestInfo) setAppliedOnce(applied *Applied) {
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	if info.applied == nil {
+		info.applied = applied
+	}
+}
+
+func (info *requestInfo) getApplied() *Applied {
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	return info.applied
 }
 
 func (info *requestInfo) setConsumer(consumer string) {
