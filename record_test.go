@@ -29,7 +29,8 @@ func TestRecordAddsUpTheSameCall(t *testing.T) {
 	expectStats(t, client, Stats{Counted: 3, Sent: 3})
 }
 
-// Given calls whose Applied lists the same headers in another order or twice,
+// Given calls whose Applied lists the same headers in another order, twice, in
+// lower case or with invalid names and statuses,
 // one with a status, and one without Applied
 // When they are flushed
 // Then the same headers add up, sorted and once, and the others are reports of
@@ -42,6 +43,7 @@ func TestRecordCountsPerApplied(t *testing.T) {
 	for _, applied := range []*Applied{
 		{Headers: []string{"Sunset", "Deprecation"}},
 		{Headers: []string{"Deprecation", "Sunset", "Sunset"}},
+		{Headers: []string{"sunset", "deprecation", "", "Bad,Name"}, Status: 1000},
 		{Headers: []string{"Deprecation"}, Status: 410},
 		nil,
 	} {
@@ -59,9 +61,9 @@ func TestRecordCountsPerApplied(t *testing.T) {
 		}
 		got[key] = report
 	}
-	if len(got) != 3 || got["Deprecation,Sunset "].Count != 2 || got["Deprecation Gone"].Count != 1 ||
+	if len(got) != 3 || got["Deprecation,Sunset "].Count != 3 || got["Deprecation Gone"].Count != 1 ||
 		got["unknown"].Count != 1 {
-		t.Errorf("Expected 2 calls with Deprecation and Sunset, 1 with a 410 and 1 unknown, got %+v", got)
+		t.Errorf("Expected 3 calls with Deprecation and Sunset, 1 with a 410 and 1 unknown, got %+v", got)
 	}
 }
 

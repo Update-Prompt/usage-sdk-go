@@ -2,6 +2,7 @@ package updateprompt
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -68,14 +69,25 @@ type reportKey struct {
 }
 
 // appliedKey turns applied into a comparable key: empty for unknown, else the
-// status and the header names, sorted and without duplicates
+// status and the header names, canonical, sorted and without duplicates.
+// Names that aren't HTTP tokens and statuses that aren't HTTP statuses are
+// left out.
 func appliedKey(applied *Applied) string {
 	if applied == nil {
 		return ""
 	}
-	names := slices.Clone(applied.Headers)
+	names := make([]string, 0, len(applied.Headers))
+	for _, name := range applied.Headers {
+		if validHeaderName(name) {
+			names = append(names, http.CanonicalHeaderKey(name))
+		}
+	}
 	slices.Sort(names)
-	return strconv.Itoa(applied.Status) + ":" + strings.Join(slices.Compact(names), ",")
+	status := applied.Status
+	if status < 100 || status > 599 {
+		status = 0
+	}
+	return strconv.Itoa(status) + ":" + strings.Join(slices.Compact(names), ",")
 }
 
 // reportApplied is a report's applied as the Usage API takes it
@@ -108,8 +120,8 @@ type tally struct {
 
 // Limits that keep memory bounded whatever the requests hold
 const (
-	// maxKeyBytes caps the method, host, route or path and consumer of a call
-	// together. The API refuses far shorter values, so only junk is dropped.
+	// maxKeyBytes caps the method, host, route or path, consumer and applied
+	// header names of a call together. The API refuses far shorter values, so only junk is dropped.
 	maxKeyBytes = 8 << 10
 	// maxQueryParams is how many names one report keeps, as many as the API does
 	maxQueryParams = 50
@@ -143,7 +155,7 @@ func (client *Client) Record(call Call) {
 	}
 	if len(key.method)+len(key.host)+len(key.endpoint)+len(key.consumer)+len(key.applied) > maxKeyBytes {
 		client.dropped.Add(1)
-		client.logOnce("a call's host, route, path or consumer is too long to report, so it is dropped",
+		client.logOnce("a call's host, route, path, consumer or applied headers are too long to report, so it is dropped",
 			"limit_bytes", maxKeyBytes)
 		return
 	}
