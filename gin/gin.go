@@ -27,7 +27,10 @@ func Middleware(client *updateprompt.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		request, end := client.Begin(c.Request)
 		c.Request = request
-		if route := c.FullPath(); route != "" && client.Signals(request).Apply(c.Writer) {
+		// Signals is read for every call, so calls without a route report that
+		// nothing was applied
+		signals := client.Signals(request)
+		if route := c.FullPath(); route != "" && signals.Apply(c.Writer) {
 			c.Abort()
 			end(route, c.Writer.Status())
 			return

@@ -29,7 +29,10 @@ func Middleware(client *updateprompt.Client) echo.MiddlewareFunc {
 		return func(c *echo.Context) (err error) {
 			request, end := client.Begin(c.Request())
 			c.SetRequest(request)
-			if route := routePath(c); route != "" && client.Signals(request).Apply(c.Response()) {
+			// Signals is read for every call, so calls without a route report
+			// that nothing was applied
+			signals := client.Signals(request)
+			if route := routePath(c); route != "" && signals.Apply(c.Response()) {
 				end(route, status(c, nil, true))
 				return nil
 			}

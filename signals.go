@@ -41,7 +41,8 @@ type Signals struct {
 // your router matched to a route. Calls it matched to no route get none.
 // Until the signals have been read once, there are none. The middleware and
 // the adapters in this repository call it; you need it only for a framework
-// without one.
+// without one. Once the signals have been read, the call's report says what
+// Apply added, or that nothing was added when Apply isn't called.
 //
 // Only signals for every consumer are applied. Signals for new consumers
 // need each consumer's first call, which the Usage API doesn't list yet.
@@ -78,7 +79,10 @@ func (signals Signals) Apply(w http.ResponseWriter) (refused bool) {
 	applied := &Applied{Headers: make([]string, 0, len(entry.Headers))}
 	for name, value := range entry.Headers {
 		header.Set(name, value)
-		applied.Headers = append(applied.Headers, http.CanonicalHeaderKey(name))
+		// A refusal sets its own Cache-Control, so the entry's isn't applied
+		if entry.Status == 0 || http.CanonicalHeaderKey(name) != "Cache-Control" {
+			applied.Headers = append(applied.Headers, http.CanonicalHeaderKey(name))
+		}
 	}
 	if entry.Status != 0 {
 		applied.Status = entry.Status
