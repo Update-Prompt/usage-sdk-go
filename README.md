@@ -101,6 +101,8 @@ Refused calls are still counted, but the code below the middleware doesn't run f
 
 Until the first read succeeds, no signals apply. If a read fails, the last signals read stay in use. Signals for new consumers only aren't applied yet.
 
+Each report says what the SDK applied to its calls, so Update Prompt can show how many calls get the signals. It sends only the names of the headers it added from the signal, such as `Deprecation`, and the status it answered with. Other response headers and all header values stay in your service. Before the first read succeeds, reports leave this out.
+
 ## Reporting calls by hand
 
 For a router without middleware support, another protocol, or a proxy, call `Record`:
