@@ -1,9 +1,12 @@
 package updateprompt
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // Given a ServeMux behind the middleware and an API deprecated with headers only
@@ -34,7 +37,8 @@ func TestMiddlewareAddsSignalsToMatchedRoutes(t *testing.T) {
 // Given a ServeMux behind the middleware and an API past its sunset
 // When a route and a path with no pattern are called
 // Then the route is refused with 410 without calling its handler and counted
-// under its pattern, and the other gets the mux's 404 and isn't counted
+// under its pattern with the 410 applied, and the other gets the mux's 404 and
+// isn't counted
 func TestMiddlewareRefusesMatchedRoutes(t *testing.T) {
 	gateway := newFakeGateway(t)
 	client := newTestClient(gateway)
@@ -55,7 +59,8 @@ func TestMiddlewareRefusesMatchedRoutes(t *testing.T) {
 		t.Errorf("Expected the mux's 404, got %d %v", missing.Code, missing.Header())
 	}
 	expectReports(t, gateway.reports("/v1/usage"), []report{{Method: "GET", Host: "api.example.com",
-		Route: "/orders/{id}", Timestamp: "2026-10-26T12:30:00Z", Count: 1}})
+		Route: "/orders/{id}", Timestamp: "2026-10-26T12:30:00Z", Count: 1,
+		Applied: &reportApplied{Headers: []string{}, Status: 410}}})
 	if got := gateway.reports("/v1/usage/paths"); len(got) != 0 {
 		t.Errorf("Expected no path reports, got %+v", got)
 	}
@@ -63,7 +68,8 @@ func TestMiddlewareRefusesMatchedRoutes(t *testing.T) {
 
 // Given a plain handler, no router, behind the middleware and an API refused with 404
 // When it is called
-// Then the call is refused with 404 and still counted, by raw path
+// Then the call is refused with 404 and still counted, by raw path, with the 404
+// applied
 func TestMiddlewareRefusesWithoutRouter(t *testing.T) {
 	gateway := newFakeGateway(t)
 	client := newTestClient(gateway)
@@ -76,7 +82,44 @@ func TestMiddlewareRefusesWithoutRouter(t *testing.T) {
 		t.Errorf("Expected the 404 refusal, got %d %v", response.Code, response.Header())
 	}
 	expectReports(t, gateway.reports("/v1/usage/paths"), []report{{Method: "GET", Host: "api.example.com",
-		Path: "/orders/1", Timestamp: "2026-10-26T12:30:00Z", Count: 1}})
+		Path: "/orders/1", Timestamp: "2026-10-26T12:30:00Z", Count: 1,
+		Applied: &reportApplied{Headers: []string{}, Status: 404}}})
+}
+
+// Given a ServeMux behind the middleware
+// When a route is called before the signals were read, while no entry applies
+// yet, and while an entry with two headers applies
+// Then the reports are apart: applied left out, no headers, and the entry's
+// header names sorted, without their values
+func TestMiddlewareReportsWhatItApplied(t *testing.T) {
+	gateway := newFakeGateway(t)
+	client := newTestClient(gateway)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /orders/{id}", ok)
+	handler := client.Middleware(mux)
+
+	record(handler, "GET", "http://api.example.com/orders/1")
+	setSignals(client, []signalEntry{{From: testTime.Add(time.Hour), AppliesTo: "ALL",
+		Headers: map[string]string{"Deprecation": "@1767225600"}}})
+	record(handler, "GET", "http://api.example.com/orders/2")
+	record(handler, "GET", "http://api.example.com/orders/3")
+	setSignals(client, []signalEntry{{From: testTime, AppliesTo: "ALL", Headers: map[string]string{
+		"sunset": "Fri, 15 Jan 2027 00:00:00 GMT", "Deprecation": "@1767225600"}}})
+	record(handler, "GET", "http://api.example.com/orders/4")
+	flush(t, client)
+
+	got := map[string]uint64{}
+	for _, report := range gateway.reports("/v1/usage") {
+		key := "unknown"
+		if report.Applied != nil {
+			key = fmt.Sprintf("%v %d", report.Applied.Headers, report.Applied.Status)
+		}
+		got[key] += report.Count
+	}
+	expected := map[string]uint64{"unknown": 1, "[] 0": 2, "[Deprecation Sunset] 0": 1}
+	if !reflect.DeepEqual(got, expected) {
+		t.Errorf("Expected calls per applied %v, got %v", expected, got)
+	}
 }
 
 // Given MiddlewareWithRoute with a route function that finds a route for /orders

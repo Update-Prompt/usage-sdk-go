@@ -32,13 +32,17 @@ type signalEntry struct {
 // the response. Get them with [Client.Signals].
 type Signals struct {
 	entry *signalEntry
+	// info is the call's, when the middleware or Begin saw it, to report what
+	// Apply applied
+	info *requestInfo
 }
 
 // Signals returns the deprecation signals for r, a call to your API that
 // your router matched to a route. Calls it matched to no route get none.
 // Until the signals have been read once, there are none. The middleware and
 // the adapters in this repository call it; you need it only for a framework
-// without one.
+// without one. Once the signals have been read, the call's report says what
+// Apply added, or that nothing was added when Apply isn't called.
 //
 // Only signals for every consumer are applied. Signals for new consumers
 // need each consumer's first call, which the Usage API doesn't list yet.
@@ -47,6 +51,11 @@ func (client *Client) Signals(r *http.Request) Signals {
 	if entries == nil {
 		return Signals{}
 	}
+	info, _ := r.Context().Value(requestInfoKey{}).(*requestInfo)
+	if info != nil {
+		// Read, so the call reports what Apply adds, or nothing
+		info.setAppliedOnce(&Applied{Headers: []string{}})
+	}
 	now := client.now()
 	var picked *signalEntry
 	for i := range *entries {
@@ -54,7 +63,7 @@ func (client *Client) Signals(r *http.Request) Signals {
 			picked = entry
 		}
 	}
-	return Signals{entry: picked}
+	return Signals{entry: picked, info: info}
 }
 
 // Apply adds the signals' headers to w. When the signals refuse the call, it
@@ -67,8 +76,19 @@ func (signals Signals) Apply(w http.ResponseWriter) (refused bool) {
 		return false
 	}
 	header := w.Header()
+	applied := &Applied{Headers: make([]string, 0, len(entry.Headers))}
 	for name, value := range entry.Headers {
 		header.Set(name, value)
+		// A refusal sets its own Cache-Control, so the entry's isn't applied
+		if entry.Status == 0 || http.CanonicalHeaderKey(name) != "Cache-Control" {
+			applied.Headers = append(applied.Headers, http.CanonicalHeaderKey(name))
+		}
+	}
+	if entry.Status != 0 {
+		applied.Status = entry.Status
+	}
+	if signals.info != nil {
+		signals.info.setApplied(applied)
 	}
 	if entry.Status == 0 {
 		return false
